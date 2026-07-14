@@ -73,12 +73,12 @@ and the API docs for [vllm.config.SpeculativeConfig][].
 ### Common keys
 
 These keys are commonly used across speculative decoding setups, though some
-only apply to model-based methods such as `draft_model`, `mtp`, `eagle3`, and
-`dflash`.
+only apply to model-based methods such as `draft_model`, `mtp`, `eagle3`,
+`dflash`, and `dspark`.
 
 | Key | Type | Default | Allowed values / meaning |
 | --- | --- | --- | --- |
-| `method` | `string` | `None` | Speculation method. Common values include `draft_model`, `ngram`, `suffix`, `mtp`, `eagle3`, and `dflash`. If omitted, vLLM infers the method from the provided configuration when possible. |
+| `method` | `string` | `None` | Speculation method. Common values include `draft_model`, `ngram`, `suffix`, `mtp`, `eagle3`, `dflash`, and `dspark`. If omitted, vLLM infers the method from the provided configuration when possible. |
 | `model` | `string` | `None` | Draft model, EAGLE head, or auxiliary model identifier. For `ngram`, `ngram_gpu`, `suffix`, and `mtp`, this can often be omitted. |
 | `num_speculative_tokens` | `integer > 0` | `None` | Number of speculative tokens to propose per step. Required for methods that do not infer it from model metadata. |
 | `draft_tensor_parallel_size` | `integer >= 1` | `None` | Tensor parallel size for the draft model. |
@@ -141,6 +141,76 @@ vllm serve <target-model> \
     "suffix_decoding_min_token_prob": 0.1
   }'
 ```
+
+#### Speculative-decoding training hidden states (experimental)
+
+The V2 model runner can save the target model's auxiliary hidden states for
+prefill tokens and every proposal block, including rejected proposals and the
+unused suffix after the first rejection. EAGLE3, DFlash, and DSpark are
+supported because they expose auxiliary target hidden states through the same
+verification path. Enable this prototype by setting
+`verification_hidden_states_output_dir`:
+
+```bash
+VLLM_USE_V2_MODEL_RUNNER=1 vllm serve <target-model> \
+  --speculative-config '{
+    "method": "<eagle3|dflash|dspark>",
+    "model": "<draft-model>",
+    "num_speculative_tokens": 5,
+    "verification_hidden_states_output_dir": "/tmp/spec-decode-hidden-states"
+  }'
+```
+
+Each completed request produces one persistent file and no manifest or
+sidecar:
+
+```text
+<output-dir>/<sha256-internal-request-id>.safetensors
+```
+
+The file metadata contains vLLM's internal `request_id` and the format marker
+`vllm-spec-decode-training-hidden-states-v1`. An API response ID can differ
+from the internal request ID by a suffix, so consumers should use the metadata
+when matching responses to files.
+
+The prefill portion contains `prompt_len`, `prefill_token_ids`,
+`prefill_positions`, and `prefill_hidden_states`. Chunked-prefill rows are
+combined, sorted by position, and deduplicated. Hidden states have shape
+`[rows, auxiliary layers, hidden size]`.
+
+The verification portion contains `verification_input_token_ids`,
+`verification_positions`, `verification_hidden_states`, and
+`verification_block_offsets`. Within each recovered block, row zero is the
+anchor and rows `1:` are all proposed-token positions, including rejected and
+discarded proposals.
+
+`output_token_ids` contains each block's accepted proposals followed by its
+recovery or bonus token, without padding. `output_block_offsets` delimits those
+committed outputs. The proposal count is the verification block length minus
+one, and the accepted proposal count is the output block length minus one.
+Rejected proposal counts are therefore derivable without another tensor.
+
+The auxiliary hidden-state axis follows the order configured by the draft
+model. Layer IDs are intentionally not duplicated in each dump; retain the
+target and draft model configuration alongside the training dataset.
+
+Prefix-cache hits do not execute the target model and therefore have no hidden
+states to capture. Compare `prefill_positions` below `prompt_len` with
+`range(prompt_len)` to determine whether all prompt states are present. Disable
+prefix caching when complete prompt traces are required for training.
+
+The recorder copies captured states to CPU memory, holds each active trace
+until the request finishes, and writes the safetensors file asynchronously.
+Persistent filesystem usage is O(1) files per request, but CPU memory grows
+with prompt length, verification work, auxiliary layer count, and hidden size.
+
+A generated token has an after-token hidden state only after it is fed into a
+later target-model forward. Consequently, the terminal sampled token does not
+have such a state unless the caller runs an additional forward pass.
+
+For a runnable DFlash server/client example, trace reconstruction, and target
+output validation, see the
+[DFlash hidden-state demo](../../../examples/features/speculative_decoding/dflash_hidden_states_demo/README.md).
 
 ### Notes
 

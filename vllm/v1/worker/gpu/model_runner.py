@@ -34,6 +34,7 @@ from vllm.config.compilation import CUDAGraphMode
 from vllm.distributed.parallel_state import (
     get_dcp_group,
     get_pp_group,
+    get_tensor_model_parallel_rank,
     prepare_communication_buffer_for_model,
 )
 from vllm.forward_context import BatchDescriptor, set_forward_context
@@ -105,6 +106,9 @@ from vllm.v1.worker.gpu.shutdown import free_before_shutdown
 from vllm.v1.worker.gpu.spec_decode import init_speculator
 from vllm.v1.worker.gpu.spec_decode.eagle.eagle3_utils import (
     set_eagle3_aux_hidden_state_layers,
+)
+from vllm.v1.worker.gpu.spec_decode.hidden_state_recorder import (
+    SpecDecodeHiddenStatesRecorder,
 )
 from vllm.v1.worker.gpu.spec_decode.rejection_sampler import RejectionSampler
 from vllm.v1.worker.gpu.spec_decode.speculator import DraftModelSpeculator
@@ -188,12 +192,15 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         # Speculative decoding.
         self.speculator = None
         self.use_aux_hidden_state_outputs = False
+        self.verification_hidden_states_recorder: (
+            SpecDecodeHiddenStatesRecorder | None
+        ) = None
         self.num_speculative_steps = vllm_config.num_speculative_tokens
         if self.speculative_config is not None:
             if self.is_last_pp_rank:
                 self.speculator = init_speculator(self.vllm_config, self.device)
 
-            if self.speculative_config.method in ("eagle3", "dflash", "dspark"):
+            if self.speculative_config.uses_aux_hidden_states_for_drafting():
                 # Drafting may require auxiliary hidden states from target model outputs
                 self.use_aux_hidden_state_outputs = True
                 if self.use_pp:
@@ -291,6 +298,16 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             if self.use_aux_hidden_state_outputs:
                 assert self.speculative_config is not None
                 set_eagle3_aux_hidden_state_layers(self.model, self.speculative_config)
+                output_dir = (
+                    self.speculative_config.verification_hidden_states_output_dir
+                )
+                if output_dir is not None and get_tensor_model_parallel_rank() == 0:
+                    self.verification_hidden_states_recorder = (
+                        SpecDecodeHiddenStatesRecorder(
+                            output_dir=output_dir,
+                            device=self.device,
+                        )
+                    )
             if isinstance(self.speculator, DraftModelSpeculator):
                 self.speculator.load_model(self.model)
                 eplb_models_added = self.eplb.maybe_register_speculator(
@@ -743,6 +760,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
     def finish_requests(self, scheduler_output: SchedulerOutput) -> None:
         finished_req_ids = scheduler_output.finished_req_ids
+        if self.verification_hidden_states_recorder is not None:
+            self.verification_hidden_states_recorder.finalize_requests(
+                tuple(finished_req_ids)
+            )
         preempted_req_ids = scheduler_output.preempted_req_ids
         if preempted_req_ids:
             finished_req_ids = finished_req_ids.union(preempted_req_ids)
@@ -1392,6 +1413,20 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             hidden_states, input_batch, grammar_output
         )
 
+        if self.verification_hidden_states_recorder is not None:
+            if aux_hidden_states is None:
+                raise RuntimeError(
+                    "Speculative hidden-state recording requires auxiliary hidden "
+                    "states."
+                )
+            self.verification_hidden_states_recorder.capture(
+                input_batch,
+                aux_hidden_states,
+                sampler_output.sampled_token_ids,
+                num_sampled,
+                self.req_states.prompt_len.np[input_batch.idx_mapping_np],
+            )
+
         if self.pp_handler is not None:
             # Broadcast to non-last PP ranks (handles spec decode multi-token).
             self.pp_handler.broadcast(
@@ -1547,6 +1582,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
     def shutdown(self) -> None:
         """Release GPU tensors (model weights, KV caches, workspace) so that
         memory is reclaimable when running in the same process."""
+        if self.verification_hidden_states_recorder is not None:
+            self.verification_hidden_states_recorder.close()
         torch.accelerator.synchronize()
         if hasattr(self, "kv_caches"):
             self.kv_caches.clear()

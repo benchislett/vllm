@@ -557,6 +557,14 @@ class GPUModelRunner(
         self.encoder_cudagraph_manager: EncoderCudaGraphManager | None = None
 
         self.use_aux_hidden_state_outputs = False
+        if (
+            self.speculative_config is not None
+            and self.speculative_config.verification_hidden_states_output_dir
+            is not None
+        ):
+            raise ValueError(
+                "verification_hidden_states_output_dir requires the V2 model runner."
+            )
         # Set up speculative decoding.
         # NOTE(Jiayi): currently we put the entire draft model on
         # the last PP rank. This is not ideal if there are many

@@ -139,6 +139,12 @@ class SpeculativeConfig:
     O(2 * tp_size) per token. Only applies to greedy draft selection in
     non-tree speculation."""
 
+    verification_hidden_states_output_dir: str | None = None
+    """Experimental output directory for target-model hidden states captured
+    during prefill and speculative verification. This is supported for EAGLE3,
+    DFlash, and DSpark with the V2 model runner. Each request is written to one
+    safetensors file when it finishes."""
+
     # Ngram proposer configuration
     prompt_lookup_max: int | None = Field(default=None, ge=1)
     """Maximum size of ngram token window when using Ngram proposer, required
@@ -289,11 +295,9 @@ class SpeculativeConfig:
         factors: list[Any] = []
         # Eagle3 and extract_hidden_states affect the computation graph because
         # they return intermediate hidden states in addition to the final hidden state.
-        uses_aux_hidden_states = self.method in (
-            "eagle3",
-            "extract_hidden_states",
-            "dflash",
-            "dspark",
+        uses_aux_hidden_states = (
+            self.method == "extract_hidden_states"
+            or self.uses_aux_hidden_states_for_drafting()
         )
         factors.append(uses_aux_hidden_states)
 
@@ -1068,6 +1072,16 @@ class SpeculativeConfig:
                 "speculative_config. Please pass 'draft_tensor_parallel_size' instead."
             )
 
+        if (
+            self.verification_hidden_states_output_dir is not None
+            and not self.uses_aux_hidden_states_for_drafting()
+        ):
+            raise ValueError(
+                "verification_hidden_states_output_dir is supported only with "
+                "methods that use auxiliary target hidden states: 'eagle3', "
+                "'dflash', and 'dspark'."
+            )
+
         if self.num_speculative_tokens is None:
             raise ValueError(
                 "num_speculative_tokens must be provided with "
@@ -1160,6 +1174,9 @@ class SpeculativeConfig:
         # target model hidden states"
         # TODO(ben): Refactor this so the naming is clearer
         return self.method in ("eagle", "eagle3", "mtp", "dflash", "dspark")
+
+    def uses_aux_hidden_states_for_drafting(self) -> bool:
+        return self.method in ("eagle3", "dflash", "dspark")
 
     def use_dflash(self) -> bool:
         return self.method == "dflash"
