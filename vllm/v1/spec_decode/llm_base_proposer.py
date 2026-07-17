@@ -47,6 +47,10 @@ from vllm.v1.sample.ops.topk_topp_sampler import (
 )
 from vllm.v1.sample.sampler import _SAMPLING_EPS
 from vllm.v1.spec_decode.metadata import SpecDecodeMetadata
+from vllm.v1.spec_decode.recurrent_draft_state import (
+    RecurrentDraftStateManager,
+    compact_recurrent_mtp_inputs,
+)
 from vllm.v1.spec_decode.utils import (
     PADDING_SLOT_ID,
     compute_new_slot_mapping,
@@ -151,6 +155,7 @@ class SpecDecodeBaseProposer:
 
         self.draft_attn_groups: list[AttentionGroup] = []
         self.kv_cache_gid: int = -1
+        self.recurrent_draft_state_manager: RecurrentDraftStateManager | None = None
         self.eagle3_use_aux_hidden_state: bool = (
             self._get_eagle3_use_aux_hidden_state_from_config()
         )
@@ -523,6 +528,26 @@ class SpecDecodeBaseProposer:
         self._last_draft_probs = None
         batch_size = common_attn_metadata.batch_size()
 
+        if self.recurrent_draft_state_manager is not None:
+            self.recurrent_draft_state_manager.restore()
+            if num_rejected_tokens_gpu is not None:
+                assert token_indices_to_sample is not None
+                (
+                    target_token_ids,
+                    target_positions,
+                    target_hidden_states,
+                    token_indices_to_sample,
+                    common_attn_metadata,
+                ) = compact_recurrent_mtp_inputs(
+                    target_token_ids=target_token_ids,
+                    target_positions=target_positions,
+                    target_hidden_states=target_hidden_states,
+                    token_indices_to_sample=token_indices_to_sample,
+                    common_attn_metadata=common_attn_metadata,
+                    num_rejected_tokens_gpu=num_rejected_tokens_gpu,
+                )
+                num_rejected_tokens_gpu = None
+
         if self.method in ("eagle3", "dflash"):
             model = self.model
             if isinstance(model, BreakableCUDAGraphWrapper):
@@ -593,6 +618,9 @@ class SpecDecodeBaseProposer:
                 hidden_states = last_hidden_states
             else:
                 last_hidden_states, hidden_states = ret_hidden_states
+
+        if self.recurrent_draft_state_manager is not None:
+            self.recurrent_draft_state_manager.capture(per_layer_attn_metadata)
 
         # After step 0: switch to reuse mode so steps 1+ skip the indexer
         # and read the indices that step 0 just wrote into the shared buffer.
@@ -1153,6 +1181,7 @@ class SpecDecodeBaseProposer:
             slot_mapping=common_attn_metadata.slot_mapping[:total_num_tokens],
             causal=True,
             dcp_local_seq_lens=common_attn_metadata.dcp_local_seq_lens,
+            is_prefilling=common_attn_metadata.is_prefilling,
         )
 
         return (
@@ -1264,6 +1293,7 @@ class SpecDecodeBaseProposer:
             slot_mapping=common_attn_metadata.slot_mapping[token_indices],
             causal=True,
             dcp_local_seq_lens=common_attn_metadata.dcp_local_seq_lens,
+            is_prefilling=common_attn_metadata.is_prefilling,
         )
 
         return spec_common_attn_metadata, token_indices
@@ -1327,6 +1357,23 @@ class SpecDecodeBaseProposer:
         )
 
         self.model = self._get_model()
+
+        if (
+            getattr(self.model, "requires_recurrent_draft_state_rollback", False)
+            is True
+        ):
+            if self.vllm_config.cache_config.enable_prefix_caching:
+                raise ValueError("Recurrent MTP does not support prefix caching")
+            if self.vllm_config.cache_config.mamba_cache_mode != "none":
+                raise ValueError("Recurrent MTP requires mamba_cache_mode='none'")
+            if not self.vllm_config.model_config.enforce_eager:
+                raise ValueError("Recurrent MTP requires enforce_eager=True")
+            get_caches = getattr(self.model, "get_recurrent_state_caches", None)
+            if not callable(get_caches):
+                raise TypeError(
+                    "Recurrent MTP model must expose get_recurrent_state_caches"
+                )
+            self.recurrent_draft_state_manager = RecurrentDraftStateManager(get_caches)
 
         # Find draft layers (attention layers added by draft model)
         all_attn_layers = get_layers_from_vllm_config(

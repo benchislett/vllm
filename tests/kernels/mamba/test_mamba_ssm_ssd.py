@@ -9,6 +9,7 @@ from einops import rearrange, repeat
 from vllm.model_executor.layers.mamba.ops.ssd_combined import (
     mamba_chunk_scan_combined_varlen,
 )
+from vllm.model_executor.layers.mamba.ops.mamba_ssm import selective_state_update
 from vllm.platforms import current_platform
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.attention.backends.mamba2_attn import compute_varlen_chunk_metadata
@@ -262,6 +263,108 @@ def test_mamba_chunk_scan_single_example(d_head, n_heads, seq_len_chunk_size, it
         atol=atol,
         rtol=rtol,
     )
+
+
+def test_mamba_chunk_scan_matches_eleven_recurrent_updates():
+    set_random_seed(0)
+    prefix_len = 7
+    num_draft_tokens = 11
+    seqlen = prefix_len + num_draft_tokens
+    chunk_size = 128
+    n_heads = 8
+    d_head = 64
+    d_state = 128
+    n_groups = 1
+    dtype = torch.bfloat16
+    device = DEVICE
+
+    x = torch.randn(seqlen, n_heads, d_head, dtype=dtype, device=device)
+    dt = torch.randn(seqlen, n_heads, dtype=dtype, device=device)
+    A = -torch.exp(torch.rand(n_heads, dtype=torch.float32, device=device))
+    B = torch.randn(seqlen, n_groups, d_state, dtype=dtype, device=device)
+    C = torch.randn(seqlen, n_groups, d_state, dtype=dtype, device=device)
+    D = torch.randn(n_heads, dtype=torch.float32, device=device)
+    dt_bias = torch.randn(n_heads, dtype=torch.float32, device=device) - 4
+    initial_state = torch.randn(
+        1,
+        n_heads,
+        d_head,
+        d_state,
+        dtype=torch.float32,
+        device=device,
+    )
+
+    def chunk_scan(end, initial_states):
+        cu_seqlens = torch.tensor([0, end], dtype=torch.int32, device=device)
+        cu_chunk_seqlens, last_chunk_indices, seq_idx = (
+            compute_varlen_chunk_metadata(cu_seqlens, chunk_size)
+        )
+        out = torch.empty_like(x[:end])
+        state = mamba_chunk_scan_combined_varlen(
+            x[:end],
+            dt[:end],
+            A,
+            B[:end],
+            C[:end],
+            chunk_size,
+            cu_seqlens=cu_seqlens,
+            cu_chunk_seqlens=cu_chunk_seqlens,
+            last_chunk_indices=last_chunk_indices,
+            seq_idx=seq_idx,
+            out=out,
+            D=D,
+            dt_bias=dt_bias,
+            initial_states=initial_states,
+            dt_softplus=True,
+            state_dtype=torch.float32,
+        )
+        return out, state
+
+    full_out, full_state = chunk_scan(seqlen, initial_state)
+    prefix_out, prefix_state = chunk_scan(prefix_len, initial_state)
+    state = torch.randn(
+        13,
+        n_heads,
+        d_head,
+        d_state,
+        dtype=torch.float32,
+        device=device,
+    )
+    state[1].copy_(prefix_state[0])
+    accepted_state = state[1].clone()
+    null_state = state[0].clone()
+    scratch_state = state[2:].clone()
+    recurrent_outputs = []
+    A_update = A[:, None, None].expand(n_heads, d_head, d_state)
+    D_update = D[:, None].expand(n_heads, d_head)
+    dt_bias_update = dt_bias[:, None].expand(n_heads, d_head)
+    state_indices = torch.arange(1, 13, dtype=torch.int32, device=device).unsqueeze(0)
+
+    for token_idx in range(prefix_len, seqlen):
+        out = torch.empty(1, n_heads, d_head, dtype=dtype, device=device)
+        selective_state_update(
+            state,
+            x[token_idx : token_idx + 1],
+            dt[token_idx : token_idx + 1, :, None].expand(-1, -1, d_head),
+            A_update,
+            B[token_idx : token_idx + 1],
+            C[token_idx : token_idx + 1],
+            D_update,
+            dt_bias_update,
+            dt_softplus=True,
+            state_batch_indices=state_indices,
+            out=out,
+        )
+        recurrent_outputs.append(out)
+
+    recurrent_out = torch.cat([prefix_out, *recurrent_outputs])
+    torch.testing.assert_close(recurrent_out, full_out, atol=5e-2, rtol=5e-2)
+    torch.testing.assert_close(state[1:2], full_state, atol=2e-2, rtol=2e-2)
+    torch.testing.assert_close(state[0], null_state, atol=0, rtol=0)
+    torch.testing.assert_close(state[2:], scratch_state, atol=0, rtol=0)
+
+    state[1].copy_(accepted_state)
+    torch.testing.assert_close(state[1], accepted_state, atol=0, rtol=0)
 
 
 @pytest.mark.parametrize("itype", [torch.float32])

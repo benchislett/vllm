@@ -192,6 +192,84 @@ def test_causal_conv1d_update(dim, width, seqlen, has_bias, silu_activation, ity
     assert torch.allclose(out, out_ref, rtol=rtol, atol=atol)
 
 
+def test_causal_conv1d_prefill_matches_eleven_recurrent_updates():
+    set_random_seed(0)
+    prefix_len = 7
+    num_draft_tokens = 11
+    seqlen = prefix_len + num_draft_tokens
+    dim = 768
+    width = 4
+    dtype = torch.bfloat16
+    device = DEVICE
+
+    x = torch.randn(1, dim, seqlen, dtype=dtype, device=device)
+    weight = torch.randn(dim, width, dtype=dtype, device=device)
+    bias = torch.randn(dim, dtype=dtype, device=device)
+    initial_state = torch.randn(
+        1, dim, width - 1, dtype=dtype, device=device
+    )
+
+    full_out, full_state = causal_conv1d_ref(
+        x,
+        weight,
+        bias,
+        activation="silu",
+        initial_states=initial_state,
+        return_final_states=True,
+    )
+
+    state_len = width - 1 + num_draft_tokens
+    state = torch.randn(13, dim, state_len, dtype=dtype, device=device)
+    state[1, :, : width - 1].copy_(initial_state[0])
+    unused_temporal_state = state[:, :, width - 1 :].clone()
+    null_state = state[0].clone()
+    prefix_out = causal_conv1d_fn(
+        x[0, :, :prefix_len],
+        weight,
+        bias=bias,
+        conv_states=state,
+        query_start_loc=torch.tensor(
+            [0, prefix_len], dtype=torch.int32, device=device
+        ),
+        cache_indices=torch.tensor([1], dtype=torch.int32, device=device),
+        has_initial_state=torch.tensor([True], device=device),
+        activation="silu",
+    )
+    accepted_state = state[1, :, : width - 1].clone()
+    scratch_state = state[2:].clone()
+    recurrent_outputs = []
+    state_indices = torch.arange(1, 13, dtype=torch.int32, device=device).unsqueeze(0)
+
+    for token_idx in range(prefix_len, seqlen):
+        out = causal_conv1d_update(
+            x[:, :, token_idx : token_idx + 1],
+            state,
+            weight,
+            bias,
+            activation="silu",
+            conv_state_indices=state_indices,
+        )
+        recurrent_outputs.append(out)
+
+    recurrent_out = torch.cat(
+        [prefix_out.unsqueeze(0), *recurrent_outputs], dim=-1
+    )
+    torch.testing.assert_close(recurrent_out, full_out, atol=5e-2, rtol=1e-2)
+    torch.testing.assert_close(
+        state[1:2, :, : width - 1], full_state, atol=0, rtol=0
+    )
+    torch.testing.assert_close(state[0], null_state, atol=0, rtol=0)
+    torch.testing.assert_close(state[2:], scratch_state, atol=0, rtol=0)
+    torch.testing.assert_close(
+        state[:, :, width - 1 :], unused_temporal_state, atol=0, rtol=0
+    )
+
+    state[1, :, : width - 1].copy_(accepted_state)
+    torch.testing.assert_close(
+        state[1, :, : width - 1], accepted_state, atol=0, rtol=0
+    )
+
+
 @pytest.mark.parametrize("itype", [torch.float32, torch.bfloat16])
 @pytest.mark.parametrize("silu_activation", [False, True])
 @pytest.mark.parametrize("has_bias", [False, True])

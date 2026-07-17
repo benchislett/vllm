@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""NemotronH-MTP model with attention layers."""
+"""NemotronH-MTP model with hybrid layers."""
 
 import typing
 from collections.abc import Callable, Iterable
@@ -33,8 +33,17 @@ from vllm.transformers_utils.configs.nemotron_h import NemotronHConfig
 from .interfaces import SupportsPP
 from .nemotron_h import (
     NemotronHAttentionDecoderLayer,
+    NemotronHMambaDecoderLayer,
     NemotronHMoEDecoderLayer,
 )
+
+
+def _make_mtp_final_layernorm(config: NemotronHConfig) -> nn.LayerNorm:
+    return nn.LayerNorm(
+        config.hidden_size,
+        eps=config.layer_norm_epsilon,
+        bias=config.mlp_bias,
+    )
 
 
 class NemotronHMTPAttentionDecoderLayer(NemotronHAttentionDecoderLayer):
@@ -80,10 +89,7 @@ class NemotronHMTPAttentionDecoderLayer(NemotronHAttentionDecoderLayer):
             )
 
         if has_end_norm:
-            self.final_layernorm = RMSNorm(
-                config.hidden_size,
-                eps=getattr(config, "layer_norm_epsilon", 1e-5),
-            )
+            self.final_layernorm = _make_mtp_final_layernorm(config)
 
     def forward(
         self,
@@ -119,6 +125,75 @@ class NemotronHMTPAttentionDecoderLayer(NemotronHAttentionDecoderLayer):
                 hidden_states = hidden_states + residual
                 residual = None  # Consumed residual
 
+            hidden_states = self.final_layernorm(hidden_states)
+
+        return hidden_states, residual
+
+
+class NemotronHMTPMambaDecoderLayer(NemotronHMambaDecoderLayer):
+    def __init__(
+        self,
+        config: NemotronHConfig,
+        layer_idx: int,
+        model_config: ModelConfig | None = None,
+        cache_config: CacheConfig | None = None,
+        quant_config: QuantizationConfig | None = None,
+        parallel_config: ParallelConfig | None = None,
+        prefix: str = "",
+        has_start_projections: bool = False,
+        has_end_norm: bool = False,
+    ) -> None:
+        super().__init__(
+            config=config,
+            layer_idx=layer_idx,
+            model_config=model_config,
+            cache_config=cache_config,
+            quant_config=quant_config,
+            parallel_config=parallel_config,
+            prefix=prefix,
+        )
+        self.has_start_projections = has_start_projections
+        self.has_end_norm = has_end_norm
+
+        if has_start_projections:
+            self.enorm = RMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
+            self.hnorm = RMSNorm(config.hidden_size, eps=config.layer_norm_epsilon)
+            self.eh_proj = ColumnParallelLinear(
+                input_size=config.hidden_size * 2,
+                output_size=config.hidden_size,
+                bias=False,
+                gather_output=True,
+                params_dtype=getattr(config, "dtype", torch.bfloat16),
+                quant_config=quant_config,
+                prefix=f"{prefix}.eh_proj",
+            )
+
+        if has_end_norm:
+            self.final_layernorm = _make_mtp_final_layernorm(config)
+
+    def forward(
+        self,
+        inputs_embeds: torch.Tensor,
+        positions: torch.Tensor,
+        hidden_states: torch.Tensor,
+        residual: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        if self.has_start_projections:
+            inputs_embeds = self.enorm(inputs_embeds)
+            hidden_states = self.hnorm(hidden_states)
+            hidden_states, _ = self.eh_proj(
+                torch.cat([inputs_embeds, hidden_states], dim=-1)
+            )
+
+        hidden_states, residual = super().forward(
+            hidden_states=hidden_states,
+            residual=residual,
+        )
+
+        if self.has_end_norm:
+            if residual is not None:
+                hidden_states = hidden_states + residual
+                residual = None
             hidden_states = self.final_layernorm(hidden_states)
 
         return hidden_states, residual
@@ -167,10 +242,7 @@ class NemotronHMTPMoEDecoderLayer(NemotronHMoEDecoderLayer):
             )
 
         if has_end_norm:
-            self.final_layernorm = RMSNorm(
-                config.hidden_size,
-                eps=getattr(config, "layer_norm_epsilon", 1e-5),
-            )
+            self.final_layernorm = _make_mtp_final_layernorm(config)
 
     def forward(
         self,
@@ -267,6 +339,8 @@ class NemotronHMultiTokenPredictor(nn.Module):
 
             if char == "*":
                 self.layers[str(i)] = NemotronHMTPAttentionDecoderLayer(**common_kwargs)
+            elif char == "M":
+                self.layers[str(i)] = NemotronHMTPMambaDecoderLayer(**common_kwargs)
             elif char == "E":
                 self.layers[str(i)] = NemotronHMTPMoEDecoderLayer(**common_kwargs)
             else:
@@ -355,8 +429,24 @@ class NemotronHMTP(nn.Module, SupportsPP):
             self.model.make_empty_intermediate_tensors
         )
 
+    @property
+    def requires_recurrent_draft_state_rollback(self) -> bool:
+        return any(
+            isinstance(layer, NemotronHMTPMambaDecoderLayer)
+            for layer in self.model.layers.values()
+        )
+
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)
+
+    def get_recurrent_state_caches(
+        self,
+    ) -> dict[str, tuple[torch.Tensor, ...]]:
+        return {
+            layer.mixer.prefix: layer.mixer.kv_cache
+            for layer in self.model.layers.values()
+            if isinstance(layer, NemotronHMTPMambaDecoderLayer)
+        }
 
     def forward(
         self,
@@ -367,7 +457,7 @@ class NemotronHMTP(nn.Module, SupportsPP):
         inputs_embeds: torch.Tensor | None = None,
         **kwargs: object,
     ) -> torch.Tensor:
-        """Forward - applies attention-based MTP."""
+        """Apply the hybrid MTP stack."""
         hidden_states = self.model(
             input_ids,
             positions,
@@ -422,6 +512,7 @@ class NemotronHMTP(nn.Module, SupportsPP):
                 continue
 
             name = name.replace("mtp.layers.", "model.layers.")
+            name = name.replace(".A_log", ".A")
 
             if "embeddings" in name:
                 name = name.replace("embeddings", "embed_tokens")

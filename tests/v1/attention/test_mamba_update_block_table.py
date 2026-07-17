@@ -16,7 +16,11 @@ from types import SimpleNamespace
 
 import torch
 
-from tests.v1.attention.utils import MockMambaBuilder
+from tests.v1.attention.utils import (
+    BatchSpec,
+    MockMambaBuilder,
+    create_common_attn_metadata,
+)
 from vllm.config.compilation import CUDAGraphMode
 from vllm.v1.attention.backends.mamba_attn import BaseMambaAttentionMetadata
 from vllm.v1.kv_cache_interface import MambaSpec
@@ -68,6 +72,80 @@ def test_mamba_single_token_prompt_runs_as_prefill():
     assert metadata.num_decodes == 2
     assert metadata.num_prefills == 1
     assert metadata.has_initial_states_p.tolist() == [False]
+
+
+def _make_recurrent_draft_builder(num_speculative_tokens: int = 11):
+    max_model_len = 256
+    config = _make_vllm_config(
+        max_model_len,
+        max_num_seqs=2,
+        num_speculative_tokens=num_speculative_tokens,
+        block_size=max_model_len,
+    )
+    config.cache_config.mamba_cache_mode = "none"
+    spec = MambaSpec(
+        block_size=max_model_len,
+        shapes=((1,), (1,)),
+        dtypes=(torch.float32,),
+        mamba_cache_mode="none",
+        num_speculative_blocks=num_speculative_tokens,
+    )
+    return MockMambaBuilder(spec, ["mtp.layers.0.mixer"], config, torch.device("cpu"))
+
+
+def test_recurrent_mtp_first_pass_metadata_for_all_acceptance_lengths():
+    builder = _make_recurrent_draft_builder()
+    block_table = torch.arange(12, dtype=torch.int32).unsqueeze(0) + 20
+
+    for query_len in range(1, 13):
+        common = create_common_attn_metadata(
+            BatchSpec(seq_lens=[100], query_lens=[query_len]),
+            block_size=256,
+            device=torch.device("cpu"),
+        ).replace(
+            block_table_tensor=block_table,
+            is_prefilling=torch.tensor([False]),
+        )
+
+        metadata = builder.build_for_drafting(common, draft_index=0)
+
+        if query_len == 1:
+            assert metadata.num_decodes == 1
+            assert metadata.num_prefills == 0
+            assert metadata.state_indices_tensor_d.tolist() == block_table.tolist()
+        else:
+            assert metadata.num_decodes == 0
+            assert metadata.num_prefills == 1
+            assert metadata.has_initial_states_p.tolist() == [True]
+            assert metadata.state_indices_tensor_p.tolist() == [20]
+
+
+def test_recurrent_mtp_later_drafts_keep_the_base_state_page():
+    builder = _make_recurrent_draft_builder()
+    block_table = torch.stack(
+        [
+            torch.arange(12, dtype=torch.int32) + 20,
+            torch.arange(12, dtype=torch.int32) + 40,
+        ]
+    )
+    common = create_common_attn_metadata(
+        BatchSpec(seq_lens=[100, 200], query_lens=[1, 1]),
+        block_size=256,
+        device=torch.device("cpu"),
+    ).replace(
+        block_table_tensor=block_table,
+        is_prefilling=torch.tensor([False, False]),
+    )
+
+    for draft_index in range(1, 12):
+        metadata = builder.build_for_drafting(common, draft_index=draft_index)
+
+        assert metadata.num_decodes == 2
+        assert metadata.num_prefills == 0
+        assert metadata.num_accepted_tokens is None
+        assert metadata.query_start_loc_d is None
+        assert metadata.state_indices_tensor_d.tolist() == block_table.tolist()
+        assert metadata.state_indices_tensor_d[:, 0].tolist() == [20, 40]
 
 
 def test_update_block_table_copies_block_idx_to_persistent_buffers():
