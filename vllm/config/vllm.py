@@ -2223,6 +2223,17 @@ class VllmConfig:
             ):
                 unsupported.append("EAGLE3 with pipeline parallelism")
 
+            if (
+                speculative_config.use_adaptive_verification
+                and self.parallel_config.pipeline_parallel_size > 1
+            ):
+                # Cost curves and confidences only exist on the last PP rank;
+                # earlier ranks would diverge on the trimmed batch shape.
+                # Set enable_adaptive_verification=false to use dspark with PP.
+                unsupported.append(
+                    "DSpark adaptive verification with pipeline parallelism"
+                )
+
         if self.parallel_config.enable_dbo:
             unsupported.append("dual batch overlap")
 
