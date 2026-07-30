@@ -1041,7 +1041,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         adaptive_verification = (
             self.adaptive_verification if num_draft_tokens_per_req is not None else None
         )
+        scheduled_num_tokens = num_scheduled_tokens
         if adaptive_verification is not None:
+            # The GPU may regrant trimmed drafts unevenly, but never beyond a
+            # request's scheduled count: the pre-trim counts remain the
+            # per-request upper bound for CPU-side metadata.
             num_scheduled_tokens = adaptive_verification.compact_batch(
                 num_draft_tokens_per_req,
                 num_scheduled_tokens,
@@ -1132,7 +1136,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         seq_lens_cpu_upper_bound_np = np.zeros(num_reqs_padded, dtype=np.int32)
         np.add(
             num_computed_tokens_np,
-            num_scheduled_tokens,
+            scheduled_num_tokens,
             out=seq_lens_cpu_upper_bound_np[:num_reqs],
         )
         seq_lens_cpu_upper_bound = torch.from_numpy(seq_lens_cpu_upper_bound_np)
@@ -1178,6 +1182,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             cu_num_logits_np=cu_num_logits_np,
             has_structured_output_reqs=scheduler_output.has_structured_output_requests,
             prompt_lens=prompt_lens,
+            max_query_len=(
+                int(scheduled_num_tokens.max())
+                if adaptive_verification is not None
+                else None
+            ),
         )
         return pcp.maybe_partition_pcp_batch(self.pcp_manager, input_batch)
 
