@@ -244,12 +244,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             else 1
         )
 
-        self.step_timing = StepTimingCollector(
-            self.is_last_pp_rank
-            and not self.is_pooling_model
-            and self.speculative_config is not None
-            and self.speculative_config.use_adaptive_verification
-        )
+        self.step_timing = StepTimingCollector()
 
         # General request states.
         self.req_states = RequestState(
@@ -510,9 +505,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                     self.speculative_config.adaptive_verification_ema_alpha,
                     max_total_logits=max_chunk_logits(self.vocab_size),
                 )
-                self.step_timing.consumer = (
-                    self.adaptive_verification.consume_step_timing
-                )
             else:
                 # Hybrid model states derive per-request structure from the
                 # scheduled counts, which are placeholders under trimming.
@@ -611,7 +603,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         context_len: int = 0,
         skip_eplb: bool = False,
         is_profile: bool = False,
-        timing_enabled: bool = False,
         **kwargs,
     ) -> tuple[torch.Tensor | None, torch.Tensor | None]:
         if skip_attn and not is_profile:
@@ -669,7 +660,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 skip_attn_for_dummy_run=skip_attn,
                 is_profile=is_profile,
                 context_len=context_len,
-                timing_enabled=timing_enabled,
             )
         self.kv_connector.set_disabled(False)
 
@@ -732,8 +722,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 is_profile=is_profile,
             )
             self.step_timing.drafter_end()
-
-        self.step_timing.finish()
 
         assert hidden_states is not None  # Last PP rank always has hidden_states
         sample_hidden_states = hidden_states[input_batch.logits_indices]
@@ -841,12 +829,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             if self.speculator is not None:
                 self.speculator.capture()
             if self.adaptive_verification is not None:
-                for batch in self.adaptive_verification.batches_to_profile(
-                    self.cudagraph_manager.captured_token_counts()
-                ):
-                    self._dummy_run(**batch)
-                self.step_timing.flush()
-                self.adaptive_verification.set_initial_cost_curves()
+                with self.step_timing.collect() as timings:
+                    for batch in self.adaptive_verification.batches_to_profile(
+                        self.cudagraph_manager.captured_token_counts()
+                    ):
+                        self._dummy_run(**batch)
+                self.adaptive_verification.set_initial_cost_curves(timings)
 
         end_time = time.perf_counter()
         end_free_gpu_memory = torch.accelerator.get_memory_info()[0]
@@ -1314,7 +1302,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         skip_attn_for_dummy_run: bool = False,
         is_profile: bool = False,
         context_len: int = 0,
-        timing_enabled: bool = False,
     ) -> ModelRunnerOutput | IntermediateTensors | None:
         if not dummy_run:
             # Update the request states.
@@ -1389,8 +1376,6 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             # All DP ranks have zero tokens to run.
             empty_output = self.kv_connector.no_forward(scheduler_output)
             return empty_output
-
-        self.step_timing.start(timing_enabled)
 
         if not dummy_run:
             # Common case.
