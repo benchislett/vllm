@@ -576,6 +576,22 @@ class EngineCore:
         else:
             eco.scheduler_stats.iteration_details = iteration_details
 
+    @staticmethod
+    def _update_iteration_details_from_model_output(
+        iteration_details: SchedulerIterationDetails | None,
+        scheduler_output: SchedulerOutput,
+        model_output: ModelRunnerOutput,
+    ) -> None:
+        num_executed_tokens = model_output.num_executed_tokens
+        if iteration_details is None or num_executed_tokens is None:
+            return
+
+        num_trimmed_tokens = (
+            scheduler_output.total_num_scheduled_tokens - num_executed_tokens
+        )
+        assert 0 <= num_trimmed_tokens <= iteration_details.num_generation_tokens
+        iteration_details.num_generation_tokens -= num_trimmed_tokens
+
     def _should_throttle_prefills(self) -> bool:
         """Whether to defer new prefills this step (DP prefill balancing).
         Overridden by the DP engine core; never throttles otherwise."""
@@ -602,6 +618,10 @@ class EngineCore:
             model_output = future.result()
             if model_output is None:
                 model_output = self.model_executor.sample_tokens(grammar_output)
+
+        self._update_iteration_details_from_model_output(
+            iteration_details, scheduler_output, model_output
+        )
 
         # Before processing the model output, process any aborts that happened
         # during the model execution.
@@ -704,6 +724,10 @@ class EngineCore:
                 # call failed - raise that exception.
                 exec_model_fut.result()
                 raise RuntimeError("unexpected error")
+
+        self._update_iteration_details_from_model_output(
+            iteration_details, scheduler_output, model_output
+        )
 
         # Before processing the model output, process any aborts that happened
         # during the model execution.
