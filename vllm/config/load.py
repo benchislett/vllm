@@ -31,8 +31,9 @@ class LoadConfig:
     """
     The format of the model weights to load.
 
-    - "auto" will try to load the weights in the safetensors format and fall
-      back to the pytorch bin format if safetensors format is not available.
+    - "auto" will try fastsafetensors on NVIDIA and AMD GPUs, fall back to the
+      standard Safetensors loader, then fall back to PyTorch bin weights if
+      Safetensors weights are not available.
     - "pt" will load the weights in the pytorch bin format.
     - "safetensors" will load the weights in the safetensors format.
     - "instanttensor" will load the Safetensors weights on CUDA devices using

@@ -4,7 +4,7 @@ import dataclasses
 import glob
 import os
 import time
-from collections.abc import Generator, Iterable
+from collections.abc import Generator, Iterable, Iterator
 from typing import cast
 
 import torch
@@ -34,10 +34,35 @@ from vllm.model_executor.model_loader.weight_utils import (
     pt_weights_iterator,
     safetensors_weights_iterator,
 )
+from vllm.platforms import current_platform
 from vllm.tracing import instrument
 from vllm.transformers_utils.repo_utils import list_filtered_repo_files
+from vllm.utils.import_utils import _has_module
 
 logger = init_logger(__name__)
+
+
+def _fall_back_to_safetensors(
+    primary: Iterator[tuple[str, torch.Tensor]],
+    fallback: Iterator[tuple[str, torch.Tensor]],
+) -> Generator[tuple[str, torch.Tensor], None, None]:
+    try:
+        first_weight = next(primary)
+    except StopIteration:
+        yield from fallback
+    except Exception as error:
+        logger.warning_once(
+            "fastsafetensors failed before loading any weights: %s. "
+            "Falling back to the standard Safetensors loader.",
+            str(error),
+        )
+        yield from fallback
+    else:
+        yield first_weight
+        # Drop our reference so the first shard's buffer can be freed while
+        # the rest of the weights stream in.
+        del first_weight
+        yield from primary
 
 
 class DefaultModelLoader(BaseModelLoader):
@@ -241,6 +266,22 @@ class DefaultModelLoader(BaseModelLoader):
 
         return hf_folder, hf_weights_files, use_safetensors
 
+    def _prefer_fastsafetensors(self) -> bool:
+        """Whether "auto" should try fastsafetensors before plain Safetensors.
+
+        Only for setups fastsafetensors supports: a CUDA-alike GPU as the load
+        device, no Safetensors load strategy, and no expert-parallel weight
+        filtering.
+        """
+        return (
+            self.load_config.load_format == "auto"
+            and _has_module("fastsafetensors")
+            and current_platform.is_cuda_alike()
+            and self.load_config.safetensors_load_strategy is None
+            and self.local_expert_ids is None
+            and (self.load_config.device or "cuda").startswith("cuda")
+        )
+
     def _get_weights_iterator(
         self, source: "Source"
     ) -> Generator[tuple[str, torch.Tensor], None, None]:
@@ -296,6 +337,14 @@ class DefaultModelLoader(BaseModelLoader):
                             self.load_config.safetensors_prefetch_block_size
                         ),
                     )
+                    if self._prefer_fastsafetensors():
+                        weights_iterator = _fall_back_to_safetensors(
+                            fastsafetensors_weights_iterator(
+                                hf_weights_files,
+                                self.load_config.use_tqdm_on_load,
+                            ),
+                            weights_iterator,
+                        )
         else:
             if extra_config.get("enable_multithread_load"):
                 weights_iterator = multi_thread_pt_weights_iterator(

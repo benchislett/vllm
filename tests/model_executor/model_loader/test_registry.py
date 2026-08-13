@@ -6,7 +6,11 @@ from torch import nn
 
 from vllm.config import ModelConfig
 from vllm.config.load import LoadConfig
-from vllm.model_executor.model_loader import get_model_loader, register_model_loader
+from vllm.model_executor.model_loader import (
+    default_loader,
+    get_model_loader,
+    register_model_loader,
+)
 from vllm.model_executor.model_loader.base_loader import BaseModelLoader
 from vllm.model_executor.model_loader.default_loader import DefaultModelLoader
 
@@ -88,3 +92,34 @@ def test_default_loader_hf_still_falls_back_to_pt(tmp_path):
     )
     assert use_safetensors is False
     assert any(f.endswith("model.pt") for f in files)
+
+
+@pytest.mark.parametrize(
+    ("fast_fails", "expected"), [(False, "fast"), (True, "standard")]
+)
+def test_auto_prefers_fastsafetensors_with_fallback(monkeypatch, fast_fails, expected):
+    def fast_iterator(*_args, **_kwargs):
+        if fast_fails:
+            raise RuntimeError("fast loader failed")
+        yield "fast", None
+
+    def standard_iterator(*_args, **_kwargs):
+        yield "standard", None
+
+    monkeypatch.setattr(
+        default_loader, "fastsafetensors_weights_iterator", fast_iterator
+    )
+    monkeypatch.setattr(
+        default_loader, "safetensors_weights_iterator", standard_iterator
+    )
+    monkeypatch.setattr(default_loader.current_platform, "is_cuda_alike", lambda: True)
+    monkeypatch.setattr(default_loader, "_has_module", lambda _name: True)
+    loader = DefaultModelLoader(LoadConfig())
+    monkeypatch.setattr(
+        loader,
+        "_prepare_weights",
+        lambda *_args, **_kwargs: ("", ["model.safetensors"], True),
+    )
+    source = DefaultModelLoader.Source("model", revision=None)
+
+    assert [name for name, _ in loader._get_weights_iterator(source)] == [expected]
