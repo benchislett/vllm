@@ -25,6 +25,7 @@ def _selector_walk_kernel(
     num_steps: tl.constexpr,
     top_k: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    SAMPLE_PROBABILISTIC: tl.constexpr,
     USE_FP64: tl.constexpr,
 ):
     row = tl.program_id(0)
@@ -37,12 +38,23 @@ def _selector_walk_kernel(
     previous = 0
     for step in range(num_steps):
         flat = row * num_steps + step
+        step_req_state = tl.load(req_state_ptr + flat)
+        valid &= step_req_state == req_state
         score_base = (flat * top_k + previous) * top_k
         scores = tl.load(
             scores_ptr + score_base + offsets,
             mask=mask & valid,
             other=float("-inf"),
         ).to(tl.float32)
+        # Rejection must never observe an empty or nonfinite proposal.
+        scores = tl.where(scores == scores, scores, -float("inf"))
+        first_pos_inf = tl.min(
+            tl.where(scores == float("inf"), offsets, BLOCK_K), axis=0
+        )
+        if first_pos_inf < BLOCK_K:
+            scores = tl.where(offsets == first_pos_inf, 0.0, -float("inf"))
+        if tl.max(scores, axis=0) == -float("inf"):
+            scores = tl.where(offsets == 0, 0.0, -float("inf"))
         candidate_base = flat * top_k
         candidates = tl.load(
             candidate_ptr + candidate_base + offsets,
@@ -50,7 +62,7 @@ def _selector_walk_kernel(
             other=0,
         )
 
-        if temperature == 0.0:
+        if not SAMPLE_PROBABILISTIC or temperature == 0.0:
             best = tl.max(scores, axis=0)
             index = tl.min(tl.where(scores == best, offsets, BLOCK_K), axis=0)
         else:
@@ -68,11 +80,11 @@ def _selector_walk_kernel(
 
         tl.store(
             realized_scores_ptr + candidate_base + offsets,
-            scores,
-            mask=mask & valid,
+            tl.where(valid, scores, -float("inf")),
+            mask=mask,
         )
-        token = tl.load(candidate_ptr + candidate_base + index, mask=valid, other=0)
-        tl.store(tokens_ptr + flat, token, mask=valid)
+        token = tl.load(candidate_ptr + candidate_base + index, mask=valid, other=-1)
+        tl.store(tokens_ptr + flat, token)
         previous = index
 
 
@@ -92,8 +104,9 @@ def _cache_draft_logits_kernel(
     flat = tl.program_id(0)
     req_state = tl.load(req_state_ptr + flat)
     step = flat % num_steps
+    row_req_state = tl.load(req_state_ptr + flat - step)
     offsets = tl.arange(0, BLOCK_K)
-    mask = (req_state >= 0) & (offsets < top_k)
+    mask = (req_state >= 0) & (req_state == row_req_state) & (offsets < top_k)
     candidate_base = flat * top_k
     cache_base = (req_state * num_steps + step) * top_k
     old_token_ids = tl.load(cached_candidate_ptr + cache_base + offsets, mask=mask)
@@ -128,18 +141,19 @@ class DFlash2Speculator(DFlashSpeculator):
             dtype=torch.float32,
             device=device,
         )
-        # The selector samples a probabilistic path for non-greedy requests, so
-        # rejection sampling always needs the realized proposal distribution.
-        self.draft_logits = torch.full(
-            (
-                self.max_num_reqs,
-                self.num_speculative_steps,
-                self.vocab_size,
-            ),
-            -float("inf"),
-            dtype=torch.float32,
-            device=device,
-        )
+        if self.draft_logits is not None:
+            # Preserve the FP32 scores used by the selector so rejection sees
+            # exactly the proposal distribution that produced the draft.
+            self.draft_logits = torch.full(
+                (
+                    self.max_num_reqs,
+                    self.num_speculative_steps,
+                    self.vocab_size,
+                ),
+                -float("inf"),
+                dtype=torch.float32,
+                device=device,
+            )
         self._cached_candidate_ids = torch.zeros(
             self._selector_scores.shape, dtype=torch.int64, device=device
         )
@@ -163,6 +177,7 @@ class DFlash2Speculator(DFlashSpeculator):
             num_steps=self.num_speculative_steps,
             top_k=self.selector_top_k,
             BLOCK_K=block_k,
+            SAMPLE_PROBABILISTIC=self.draft_logits is not None,
             USE_FP64=self.use_fp64_gumbel,
             num_warps=1,
         )
@@ -220,5 +235,6 @@ class DFlash2Speculator(DFlashSpeculator):
             anchor_token_ids,
         )
         self._sample_path(candidate_ids, scores, num_reqs)
-        self._cache_draft_logits(candidate_ids, num_sample)
+        if self.draft_logits is not None:
+            self._cache_draft_logits(candidate_ids, num_sample)
         self.draft_tokens[:num_reqs].copy_(self._selector_tokens[:num_reqs])

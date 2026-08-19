@@ -8,7 +8,10 @@ import torch
 
 from vllm.model_executor.models.qwen3_dflash2 import _grouped_conv, _score_edges
 from vllm.v1.worker.gpu.spec_decode.dflash.speculator import DFlashSpeculator
-from vllm.v1.worker.gpu.spec_decode.dflash2.speculator import DFlash2Speculator
+from vllm.v1.worker.gpu.spec_decode.dflash2.speculator import (
+    DFlash2Speculator,
+    _selector_walk_kernel,
+)
 
 
 @pytest.mark.parametrize("block_size", [5, 8])
@@ -71,7 +74,68 @@ def test_selector_edges_match_sequential_reference():
     torch.testing.assert_close(actual, expected)
 
 
-def test_selector_always_keeps_proposal_logits(monkeypatch):
+def _run_selector(scores, mappings, probabilistic=True):
+    num_reqs, steps, top_k, _ = scores.shape
+    device = scores.device
+    candidates = torch.arange(
+        5, 5 + num_reqs * steps * top_k, dtype=torch.int64, device=device
+    ).view(num_reqs, steps, top_k)
+    tokens = torch.empty(num_reqs, steps, dtype=torch.int64, device=device)
+    realized_scores = torch.empty_like(candidates, dtype=torch.float32)
+    _selector_walk_kernel[(num_reqs,)](
+        scores,
+        candidates,
+        torch.ones(num_reqs * steps, dtype=torch.int64, device=device),
+        mappings,
+        torch.ones(num_reqs, dtype=torch.float32, device=device),
+        torch.zeros(num_reqs, dtype=torch.int64, device=device),
+        tokens,
+        realized_scores,
+        num_steps=steps,
+        top_k=top_k,
+        BLOCK_K=4,
+        SAMPLE_PROBABILISTIC=probabilistic,
+        USE_FP64=False,
+        num_warps=1,
+    )
+    return tokens, realized_scores, candidates
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_selector_invalid_step_emits_placeholder():
+    scores = torch.randn(1, 2, 3, 3, device="cuda")
+    mappings = torch.tensor([0, -1], dtype=torch.int32, device="cuda")
+
+    tokens, realized_scores, _ = _run_selector(scores, mappings)
+
+    assert tokens[0, 1].item() == -1
+    assert torch.isneginf(realized_scores[0, 1]).all()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    ("bad_scores", "expected_index"),
+    [
+        ([float("nan"), float("nan"), float("nan")], 0),
+        ([-float("inf"), -float("inf"), -float("inf")], 0),
+        ([0.0, float("inf"), float("inf")], 1),
+    ],
+)
+def test_selector_nonfinite_scores_fall_back_to_one_hot(bad_scores, expected_index):
+    scores = torch.zeros(1, 1, 3, 3, dtype=torch.float32, device="cuda")
+    scores[0, 0, 0] = torch.tensor(bad_scores, device="cuda")
+    mappings = torch.zeros(1, dtype=torch.int32, device="cuda")
+
+    tokens, realized_scores, candidates = _run_selector(scores, mappings)
+
+    assert tokens.item() == candidates[0, 0, expected_index].item()
+    assert realized_scores[0, 0, expected_index].item() == 0.0
+    finite = torch.isfinite(realized_scores[0, 0])
+    assert finite.sum().item() == 1
+
+
+@pytest.mark.parametrize("draft_sample_method", ["greedy", "probabilistic"])
+def test_selector_respects_draft_sample_method(monkeypatch, draft_sample_method):
     def init_base(self, _vllm_config, device):
         self.draft_model_config = SimpleNamespace(
             hf_config=SimpleNamespace(dflash_config={"selector_top_k": 3})
@@ -81,11 +145,20 @@ def test_selector_always_keeps_proposal_logits(monkeypatch):
         self.num_speculative_steps = 4
         self.vocab_size = 17
         self.draft_tokens = torch.empty((2, 4), dtype=torch.int64, device=device)
-        self.draft_logits = None
+        self.draft_logits = (
+            torch.empty((2, 4, 17), device=device)
+            if draft_sample_method == "probabilistic"
+            else None
+        )
 
     monkeypatch.setattr(DFlashSpeculator, "__init__", init_base)
     speculator = DFlash2Speculator(None, torch.device("cpu"))
 
+    if draft_sample_method == "greedy":
+        assert speculator.draft_logits is None
+        return
+
+    assert speculator.draft_logits is not None
     assert speculator.draft_logits.shape == (2, 4, 17)
     assert speculator.draft_logits.dtype == torch.float32
     assert torch.isneginf(speculator.draft_logits).all()
