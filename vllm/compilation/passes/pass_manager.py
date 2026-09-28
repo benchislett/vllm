@@ -174,8 +174,12 @@ class PostGradPassManager(CustomGraphPass):  # type: ignore[misc]
             if self.pass_config.fuse_allreduce_rms:
                 if current_platform.is_cuda():
                     from .fusion.cute_allreduce_fusion import CuteAllReduceFusionPass
+                    from .fusion.qwen_cute_moe_tail import QwenCuteMoETailFusionPass
 
-                    self.passes += [CuteAllReduceFusionPass(config)]
+                    self.passes += [
+                        CuteAllReduceFusionPass(config),
+                        QwenCuteMoETailFusionPass(config),
+                    ]
                 if rocm_aiter_ops.is_enabled():
                     self.passes += [RocmAiterAllReduceFusionPass(config)]
                 else:

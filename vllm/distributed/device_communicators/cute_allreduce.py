@@ -49,11 +49,9 @@ def build_policy():
         upper_bounds=(LL_MAX_TOKENS, MAX_TOKENS),
         targets=(ll.all_reduce_routes.targets[0], bt.all_reduce_routes.targets[0]),
     )
-    # The workspace validates both operation domains, including the unused
-    # finalize path. Extend the final BT preset through this policy's capacity.
-    finalize = replace(
-        bt.finalize_routes,
-        upper_bounds=(*bt.finalize_routes.upper_bounds[:-1], MAX_TOKENS),
+    finalize = MRangeDispatch(
+        upper_bounds=(24, 48, MAX_TOKENS),
+        targets=(ll.finalize_routes.targets[0], *bt.finalize_routes.targets),
     )
     return MNNVLCuteDSLConfig(
         profiles=(replace(bt, all_reduce_routes=routes, finalize_routes=finalize),)
@@ -105,6 +103,11 @@ class CuteAllReduce:
     ) -> "CuteAllReduce | None":
         if config is None or not supports_config(config):
             return None
+        # Cached graphs need this operator even when the compiler pass is skipped.
+        from vllm.model_executor.layers.fused_moe import (
+            qwen_cute_moe_tail,  # noqa: F401
+        )
+
         available = cls.is_supported(tp.device) and tp.world_size == 8
         # Every peer must choose the same backend before symmetric allocation.
         agreed = torch.tensor(int(available), dtype=torch.int32, device="cpu")

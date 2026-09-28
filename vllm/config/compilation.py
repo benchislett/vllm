@@ -144,6 +144,7 @@ class PassConfig:
 
     FlashInfer CuTe is preferred for BF16 Qwen3.5 MoE with hidden size 8192,
     TP8/DP1 on SM107 when its static-FP8 API and NVLink multicast are available.
+    Eligible Qwen NvFP4 shared/routed MoE producers also fuse finalization.
     Other configurations retain the existing fusion backends. Setting False
     disables fusion and its CuTe workspace allocation.
     """
