@@ -25,7 +25,6 @@ from vllm.distributed import (
     get_tp_group,
     tensor_model_parallel_all_reduce,
 )
-from vllm.distributed.device_communicators import cute_allreduce
 from vllm.forward_context import set_forward_context
 from vllm.model_executor.layers.fused_moe.experts.trtllm_nvfp4_moe import (
     TrtLlmNvFp4ExpertsMonolithic,
@@ -66,8 +65,6 @@ def test_qwen_cute_real_moe_graph_replay(
     config = VllmConfig()
     config.parallel_config.tensor_parallel_size = 8
     config.parallel_config.enable_expert_parallel = expert_parallel
-    config.kernel_config.enable_cute_allreduce = True
-    config.kernel_config.enable_cute_moe_finalize = True
     config.kernel_config.moe_backend = "flashinfer_trtllm"
     config.compilation_config.custom_ops = ["all", "+rms_norm", "+quant_fp8"]
     config.compilation_config.pass_config.fuse_allreduce_rms = True
@@ -86,7 +83,7 @@ def test_qwen_cute_real_moe_graph_replay(
     config.device_config = DeviceConfig(device=device)
     with set_current_vllm_config(config, check_compile=False), torch.device(device):
         ensure_model_parallel_initialized(8, 1)
-        cute_allreduce.initialize_for_config(config)
+        assert get_tp_group().device_communicator.cute_allreduce is not None
         torch.manual_seed(77 + int(os.environ["RANK"]))
         shared = torch.nn.Linear(8192, 8192, bias=False, dtype=torch.bfloat16)
         shared.weight.normal_(std=0.001)
@@ -213,6 +210,3 @@ def test_qwen_cute_real_moe_graph_replay(
                                 got.float(), want.float(), atol=0.06, rtol=0.03
                             )
                     assert not layer.moe_config.use_deferred_moe_finalize
-        communicator = get_tp_group().device_communicator
-        communicator.cute_allreduce.destroy()
-        communicator.cute_allreduce = None

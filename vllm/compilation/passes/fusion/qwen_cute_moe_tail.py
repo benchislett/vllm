@@ -83,10 +83,7 @@ def find_moe_producer(node, final_user: fx.Node):
 class QwenCuteMoETailFusionPass(VllmPatternMatcherPass):
     def __init__(self, config):
         super().__init__(config)
-        self.disabled = not (
-            config.kernel_config.enable_cute_moe_finalize
-            and cute_allreduce.enabled_for_config(config)
-        )
+        self.disabled = not cute_allreduce.enabled_for_config(config)
 
     def is_applicable_for_range(self, compile_range):
         return not self.disabled and compile_range.end <= cute_allreduce.MAX_TOKENS
@@ -98,7 +95,7 @@ class QwenCuteMoETailFusionPass(VllmPatternMatcherPass):
             _unview,
             runtime.qwen_cute_moe_tail,
             runtime.can_defer,
-            repr(cute_allreduce.build_policy(include_moe_finalize=True)),
+            repr(cute_allreduce.build_policy()) if not self.disabled else "unavailable",
             str(self.disabled),
         )
 

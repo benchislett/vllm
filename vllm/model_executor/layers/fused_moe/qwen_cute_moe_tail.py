@@ -11,6 +11,7 @@ from vllm.distributed.device_communicators.cute_allreduce import (
     MAX_TOKENS,
     TOP_K,
     cute_allreduce_norm,
+    get_backend,
     get_workspace,
     output_dtype,
 )
@@ -40,6 +41,7 @@ def can_defer(
 
     return bool(
         0 < m <= MAX_TOKENS
+        and get_backend() is not None
         and x.is_contiguous()
         and x.dtype == weight.dtype == torch.bfloat16
         and x.ndim == 2

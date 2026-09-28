@@ -21,7 +21,6 @@ def test_qwen_tail_owns_producer_outputs(
 ):
     """A retained intermediate must keep the original tensor-only MoE call."""
     config = VllmConfig()
-    config.kernel_config.enable_cute_moe_finalize = True
     # Test graph ownership independently from distributed workspace setup.
     monkeypatch.setattr(cute_allreduce, "enabled_for_config", lambda _: True)
     fusion = QwenCuteMoETailFusionPass(config)
