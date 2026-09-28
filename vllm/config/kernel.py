@@ -233,8 +233,10 @@ class KernelConfig:
     """Use balanced global expert IDs only during FlashInfer autotuning.
 
     Requires modular, normalized softmax MoE routing without EPLB. Preserves
-    router weights and restores normal routing before serving. Balanced tuning
-    ignores production expert skew and may select worse tactics for real traffic.
+    router weights and restores normal routing before serving. Both the default
+    and balanced modes tune on synthetic dummy inputs, not production traffic.
+    Default routing can concentrate those inputs on a few experts; balancing
+    provides representative coverage of expert GEMM shapes during tuning.
     This policy is included in the configuration hash to separate tuning caches.
     """
 
