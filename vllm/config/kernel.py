@@ -229,6 +229,15 @@ class KernelConfig:
     enable_flashinfer_autotune: bool = None  # type: ignore[assignment]
     """If True, run FlashInfer autotuning during kernel warmup."""
 
+    flashinfer_autotune_balanced_routing: bool = False
+    """Use balanced global expert IDs only during FlashInfer autotuning.
+
+    Requires modular, normalized softmax MoE routing without EPLB. Preserves
+    router weights and restores normal routing before serving. Balanced tuning
+    ignores production expert skew and may select worse tactics for real traffic.
+    This policy is included in the configuration hash to separate tuning caches.
+    """
+
     # TODO(roberto): Remove after registered CuTeDSL warmups are migrated
     # to the shared JIT warmup infrastructure.
     # https://github.com/vllm-project/vllm/pull/47451

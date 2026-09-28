@@ -25,6 +25,7 @@ from vllm.model_executor.layers.fused_moe.router.router_factory import (
     create_fused_moe_router,
 )
 from vllm.model_executor.models.llama4 import Llama4MoE
+from vllm.model_executor.warmup.balanced_moe_routing import BalancedTuningRouter
 from vllm.platforms import current_platform
 
 
@@ -44,6 +45,56 @@ def _is_aiter_capable() -> bool:
 MK_S = [(32, 256), (64, 512)]
 TOP_KS = [2, 4, 6]
 NUM_EXPERTS = [8, 16, 64]
+
+
+@pytest.mark.parametrize("rows", [1, 7, 32])
+def test_balanced_tuning_preserves_weights_and_balances_global_prefixes(rows):
+    hidden, logits = make_test_data(rows, 256, 16)
+    original = FusedTopKRouter(top_k=4, global_num_experts=16)
+    weights, original_ids = original.select_experts(hidden, logits)
+    cpu_rng = torch.random.get_rng_state().clone()
+    gpu_rng = torch.cuda.get_rng_state().clone()
+    rank_ids = []
+    for rank in range(4):
+        router = BalancedTuningRouter(original, rank)
+        actual_weights, ids = router.select_experts(hidden, logits)
+        torch.testing.assert_close(actual_weights, weights, atol=0, rtol=0)
+        assert ids.dtype == original_ids.dtype
+        assert ids.device == original_ids.device
+        sorted_ids = ids.sort(dim=-1).values
+        assert (sorted_ids[:, 1:] != sorted_ids[:, :-1]).all()
+        rank_ids.append(ids.clone())
+        # A dispatcher may mutate its IDs without corrupting the next dummy call.
+        ids.fill_(-1)
+        _, replay_ids = router.select_experts(hidden, logits)
+        torch.testing.assert_close(replay_ids, rank_ids[-1])
+    assignments = torch.cat(rank_ids).flatten()
+    for prefix in (1, 7, assignments.numel()):
+        counts = torch.bincount(assignments[:prefix].long(), minlength=16)
+        assert counts.max() - counts.min() <= 1
+    assert torch.equal(torch.random.get_rng_state(), cpu_rng)
+    assert torch.equal(torch.cuda.get_rng_state(), gpu_rng)
+    restored_weights, restored_ids = original.select_experts(hidden, logits)
+    torch.testing.assert_close(restored_weights, weights, atol=0, rtol=0)
+    torch.testing.assert_close(restored_ids, original_ids)
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"scoring_func": "sigmoid"}, {"renormalize": False}]
+)
+def test_balanced_tuning_rejects_unsupported_router_policy(kwargs):
+    with pytest.raises(ValueError, match="normalized softmax"):
+        BalancedTuningRouter(FusedTopKRouter(4, 16, **kwargs), rank=0)
+
+
+def test_balanced_tuning_rejects_cuda_graph_capture():
+    hidden, logits = make_test_data(4, 256, 16)
+    router = BalancedTuningRouter(FusedTopKRouter(4, 16), rank=0)
+    with (
+        pytest.raises(RuntimeError, match="must not enter serving graphs"),
+        torch.cuda.graph(torch.cuda.CUDAGraph()),
+    ):
+        router.select_experts(hidden, logits)
 
 
 def test_degenerate_grouped_config_uses_standard_topk() -> None:
