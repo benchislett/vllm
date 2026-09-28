@@ -530,6 +530,10 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             self.gdn_decode_kernel = "XPU"
 
         self.enable_fused_gdn_decode = self.gdn_decode_kernel == "cuda"
+        # Hardware queries must stay outside the compiled model forward.
+        self._is_sm107 = current_platform.is_cuda() and (
+            current_platform.is_device_capability(107)
+        )
         logger.info_once("GDN decode kernel: %s", self.gdn_decode_kernel)
 
         compilation_config = get_current_vllm_config().compilation_config
@@ -914,9 +918,24 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             and self.norm.weight.dtype in (torch.bfloat16, torch.float32)
         )
         if use_fused_gdn_decode:
+            from vllm.model_executor.layers.fusion.quant_activation import (
+                QuantizedActivation,
+            )
+            from vllm.model_executor.layers.mamba.gdn.output_quant import (
+                gdn_output_quant_scale,
+            )
+            from vllm.model_executor.layers.quantization.utils.quant_utils import (
+                kFp8StaticTensorSym,
+            )
+
+            output_scale = gdn_output_quant_scale(self)
             core_attn_out = torch.zeros(
                 (num_tokens, self.num_v_heads // self.tp_size, self.head_v_dim),
-                dtype=hidden_states.dtype,
+                dtype=(
+                    torch.float8_e4m3fn
+                    if output_scale is not None
+                    else hidden_states.dtype
+                ),
                 device=hidden_states.device,
             )
             torch.ops.vllm.qwen_gdn_attention_core_fused_norm_packed(
@@ -924,8 +943,18 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 ba,
                 core_attn_out,
                 layer_name=_encode_layer_name(self.prefix),
+                output_scale=output_scale,
             )
-            output, _ = self.out_proj(core_attn_out.flatten(-2))
+            projection_input = core_attn_out.flatten(-2)
+            if output_scale is not None:
+                projection_input = QuantizedActivation(
+                    projection_input,
+                    output_scale,
+                    hidden_states.dtype,
+                    projection_input.shape,
+                    kFp8StaticTensorSym,
+                )
+            output, _ = self.out_proj(projection_input)
             return output
 
         if self.gqa_interleaved_layout:
@@ -1689,6 +1718,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         output_gate: torch.Tensor,
         core_attn_out: torch.Tensor,
         attn_metadata: GDNAttentionMetadata,
+        output_scale: torch.Tensor | None = None,
     ) -> None:
         state_indices = attn_metadata.spec_state_indices_tensor
         cu_seqlens = attn_metadata.spec_query_start_loc
@@ -1724,8 +1754,13 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             b=b[:num_actual_tokens],
             a=a[:num_actual_tokens],
             output_gate=output_gate[:num_actual_tokens],
-            core_attn_out=core_attn_out[:num_actual_tokens],
+            core_attn_out=(
+                core_attn_out
+                if state_indices.size(1) > 8
+                else core_attn_out[:num_actual_tokens]
+            ),
             attn_metadata=attn_metadata,
+            output_scale=output_scale,
         )
 
     def _forward_core_decode_spec_post_conv_fused_norm(
@@ -1736,6 +1771,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         output_gate: torch.Tensor,
         core_attn_out: torch.Tensor,
         attn_metadata: GDNAttentionMetadata,
+        output_scale: torch.Tensor | None = None,
     ) -> None:
         state_indices = attn_metadata.spec_state_indices_tensor
         cu_seqlens = attn_metadata.spec_query_start_loc
@@ -1761,6 +1797,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             scale=self.head_k_dim**-0.5,
             norm_eps=self.layer_norm_epsilon,
             output_gate_activation=self.norm.activation,
+            output_scale=output_scale,
         )
 
     def _forward_core_fused_norm_packed(
@@ -1799,6 +1836,20 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         self, attn_metadata: GDNAttentionMetadata
     ) -> bool:
         state_indices = attn_metadata.spec_state_indices_tensor
+        width_supported = state_indices is not None and (
+            state_indices.size(1) <= MAX_FUSED_GDN_MTP_TOKENS
+            or (
+                state_indices.size(1) in (12, 16)
+                and current_platform.is_device_capability(107)
+                and self.kv_cache[1].dtype == torch.bfloat16
+                and self.num_k_heads // self.tp_size in (2, 4)
+                and self.num_v_heads == self.num_k_heads * 8
+                and self.head_k_dim == self.head_v_dim == 128
+                and self.norm.weight.dtype == torch.bfloat16
+                and self.dt_bias.dtype == torch.bfloat16
+                and self.norm.activation == "silu"
+            )
+        )
         return (
             attn_metadata.spec_sequence_masks is not None
             and attn_metadata.num_decodes == 0
@@ -1808,7 +1859,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             and self.num_v_heads % self.num_k_heads == 0
             and self.num_v_heads // self.num_k_heads in (1, 2, 3, 4, 8)
             and state_indices is not None
-            and state_indices.size(1) <= MAX_FUSED_GDN_MTP_TOKENS
+            and width_supported
             and hasattr(torch.ops._C, "fused_gdn_decode_post_conv_mtp")
         )
 
@@ -1945,10 +1996,18 @@ def qwen_gdn_attention_core_fused_norm_packed(
     ba: torch.Tensor,
     core_attn_out: torch.Tensor,
     layer_name: LayerNameType,
+    output_scale: torch.Tensor | None = None,
 ) -> None:
     layer_name = _resolve_layer_name(layer_name)
     forward_context: ForwardContext = get_forward_context()
     self = forward_context.no_compile_layers[layer_name]
+    if output_scale is not None:
+        from vllm.model_executor.layers.mamba.gdn.output_quant import (
+            forward_gdn_with_output_quant,
+        )
+
+        forward_gdn_with_output_quant(self, mixed_qkvz, ba, core_attn_out, output_scale)
+        return
     self._forward_core_fused_norm_packed(
         mixed_qkvz=mixed_qkvz,
         ba=ba,
