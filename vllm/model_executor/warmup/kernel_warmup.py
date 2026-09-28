@@ -7,6 +7,7 @@ happen during model execution.
 
 import sys
 import time
+from contextlib import AbstractContextManager, nullcontext
 from typing import TYPE_CHECKING
 
 import torch
@@ -466,7 +467,15 @@ def flashinfer_autotune(runner: "GPUModelRunner") -> None:
                 # HiSparse hot-buffer attention is bounded by decode batch
                 # size, not the prefill-sized batch used for the full model.
                 autotune_hisparse_flashinfer_attention(runner)
-            _run_flashinfer_autotune_dummy_runs(runner, skip_attn=hisparse_enabled)
+            routing_context: AbstractContextManager[None] = nullcontext()
+            if runner.vllm_config.kernel_config.flashinfer_autotune_balanced_routing:
+                from vllm.model_executor.warmup.balanced_moe_routing import (
+                    balanced_moe_routing,
+                )
+
+                routing_context = balanced_moe_routing(runner.get_model())
+            with routing_context:
+                _run_flashinfer_autotune_dummy_runs(runner, skip_attn=hisparse_enabled)
             replayssm_autotune_warmup(runner)
             _autotune_kimi_k3_kda_qkvg(runner.get_model())
         with torch.inference_mode():

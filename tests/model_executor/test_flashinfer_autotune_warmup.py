@@ -7,13 +7,59 @@ from typing import Any
 from unittest.mock import Mock, call, patch
 
 import pytest
+import torch
 
+from vllm.config import KernelConfig
 from vllm.model_executor.warmup.kernel_warmup import (
     _flashinfer_autotune_token_counts,
     _run_flashinfer_autotune_dummy_runs,
 )
 
 pytestmark = pytest.mark.cpu_test
+
+
+def test_balanced_routing_policy_separates_tuning_cache():
+    assert (
+        KernelConfig().compute_hash()
+        != KernelConfig(flashinfer_autotune_balanced_routing=True).compute_hash()
+    )
+
+
+@pytest.mark.parametrize("raise_in_dummy_run", [False, True])
+def test_balanced_routing_restores_model_on_exit(monkeypatch, raise_in_dummy_run):
+    from vllm.model_executor.layers.fused_moe.router.fused_topk_router import (
+        FusedTopKRouter,
+    )
+    from vllm.model_executor.warmup import balanced_moe_routing as routing
+
+    class RoutingLayer(torch.nn.Module):
+        is_monolithic = False
+
+        def __init__(self):
+            super().__init__()
+            self.router = FusedTopKRouter(2, 8)
+
+    model = torch.nn.Sequential(RoutingLayer(), RoutingLayer())
+    original_routers = [layer.router for layer in model]
+    monkeypatch.setattr(routing, "MoERunner", RoutingLayer)
+    monkeypatch.setattr(
+        routing, "get_ep_group", lambda: SimpleNamespace(rank_in_group=0)
+    )
+    try:
+        with routing.balanced_moe_routing(model):
+            assert all(
+                layer.router.original is original
+                for layer, original in zip(model, original_routers)
+            )
+            if raise_in_dummy_run:
+                raise ValueError("dummy forward failed")
+            # No router execution must also fail, instead of recording a false success.
+    except (ValueError, RuntimeError) as error:
+        expected = "dummy forward failed" if raise_in_dummy_run else "did not execute"
+        assert expected in str(error)
+    else:
+        pytest.fail("Expected a dummy-run or unused-router failure")
+    assert [layer.router for layer in model] == original_routers
 
 
 class _FakeMoERunner:
