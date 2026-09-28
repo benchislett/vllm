@@ -236,6 +236,14 @@ class KernelConfig:
     LoRA, sleep mode, fault tolerance and batch invariance are not supported.
     """
 
+    enable_cute_moe_finalize: bool = False
+    """Fuse eligible Qwen NvFP4 MoE finalization into the CuTe AR/norm tail.
+
+    Requires enable_cute_allreduce. Covers TP8 and replicated-token EP8 with
+    DP1, separate shared experts, and the monolithic FlashInfer TRTLLM backend.
+    Other producer implementations retain the AR/norm-only fusion.
+    """
+
     enable_flashinfer_autotune: bool = None  # type: ignore[assignment]
     """If True, run FlashInfer autotuning during kernel warmup."""
 
@@ -356,6 +364,10 @@ class KernelConfig:
         if isinstance(value, str):
             return value.lower().replace("-", "_")
         return value
+
+    def __post_init__(self) -> None:
+        if self.enable_cute_moe_finalize and not self.enable_cute_allreduce:
+            raise ValueError("enable_cute_moe_finalize requires enable_cute_allreduce")
 
     def compute_hash(self) -> str:
         """Produces a hash unique to the pass configuration.

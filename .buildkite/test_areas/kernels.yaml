@@ -542,6 +542,7 @@ steps:
           pytest -v -s tests/kernels/quantization/test_mxfp4_qutlass.py
           pytest -v -s tests/kernels/moe/test_flashinfer.py
           pytest -v -s tests/kernels/moe/test_trtllm_nvfp4_moe.py
+          pytest -v -s tests/kernels/moe/test_deferred_finalize_scope.py
           pytest -v -s tests/kernels/mamba/test_gdn_prefill_cutedsl.py
           pytest -v -s tests/kernels/attention/test_minimax_m3.py
           ;;

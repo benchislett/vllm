@@ -1,5 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Union
@@ -1247,6 +1250,27 @@ class FusedMoEParallelConfig:
         )
 
 
+@dataclass(frozen=True)
+class _DeferredMoECall:
+    config: "FusedMoEConfig"
+    max_num_tokens: int
+    allow_replicated_ep: bool
+
+
+_deferred_moe_call: ContextVar[_DeferredMoECall | None] = ContextVar(
+    "deferred_moe_call", default=None
+)
+
+
+def _get_deferred_moe_call(config: object) -> _DeferredMoECall | None:
+    # Scoped requests belong inside opaque consumers. Existing model-level
+    # permanent requests must remain traceable without accessing a ContextVar.
+    if torch.compiler.is_compiling():
+        return None
+    request = _deferred_moe_call.get()
+    return request if request is not None and request.config is config else None
+
+
 # Adapted from pplx-kernels tests/all_to_all_utils.py
 @dataclass
 class FusedMoEConfig:
@@ -1421,18 +1445,56 @@ class FusedMoEConfig:
         Evaluated on read rather than in ``__post_init__`` because deferral is
         requested after construction, like ``skip_final_all_reduce``.
         """
-        # The consumer fuses a TP all-reduce. Other parallel modes require a
-        # combine or reduce-scatter after the experts and cannot defer it, and
-        # the consumer has no way to strip hidden-dim padding from GEMM2 rows.
+        request = _get_deferred_moe_call(self)
+        scoped = request is not None
+        tp_only = self.tp_size > 1 and self.ep_size == 1
+        replicated_ep = (
+            request is not None
+            and request.allow_replicated_ep
+            and self.tp_size == 1
+            and self.ep_size > 1
+            and not self.moe_parallel_config.use_all2all_kernels
+        )
         return (
-            self._defer_moe_finalize
-            and self.tp_size > 1
+            (self._defer_moe_finalize or scoped)
+            and (tp_only or replicated_ep)
             and self.dp_size == 1
-            and self.ep_size == 1
             and self.pcp_size == 1
             and not self.is_sequence_parallel
             and self.hidden_dim == self.hidden_dim_unpadded
         )
+
+    @contextmanager
+    def defer_moe_finalize_for_call(
+        self,
+        max_num_tokens: int,
+        *,
+        allow_replicated_ep: bool = False,
+    ) -> Iterator[None]:
+        """Leave finalization to a consumer that owns only this opaque MoE call.
+
+        Compiler fusion cannot make a permanent deferral request: another graph
+        may retain the ordinary tensor-only consumer. The scoped request leaves
+        model configuration unchanged and restores nested requests on every exit.
+        Producer launch limits still bound ``should_defer_moe_finalize``.
+
+        ``allow_replicated_ep`` is for consumers that reduce expert-local sums
+        across the same replicated-token group. Dispatch/combine, sequence
+        parallelism and hidden-dimension padding remain ineligible.
+        """
+        if max_num_tokens <= 0:
+            raise ValueError(
+                "Scoped MoE finalization requires a positive token capacity"
+            )
+        if torch.compiler.is_compiling():
+            raise RuntimeError("Scoped MoE finalization requires an opaque consumer")
+        token = _deferred_moe_call.set(
+            _DeferredMoECall(self, max_num_tokens, allow_replicated_ep)
+        )
+        try:
+            yield
+        finally:
+            _deferred_moe_call.reset(token)
 
     def defer_moe_finalize(self, max_num_tokens: int = -1) -> None:
         """Ask the experts to leave the top-k reduction to the layer's consumer.
@@ -1472,6 +1534,9 @@ class FusedMoEConfig:
     def should_defer_moe_finalize(self, num_tokens: int) -> bool:
         """Return whether this invocation may defer the top-k reduction."""
         max_num_tokens = self.defer_moe_finalize_max_num_tokens
+        request = _get_deferred_moe_call(self)
+        if request is not None and num_tokens > request.max_num_tokens:
+            return False
         return (
             self.use_deferred_moe_finalize
             and num_tokens > 0

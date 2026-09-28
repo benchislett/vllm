@@ -25,8 +25,8 @@ HIDDEN_SIZE = 8192
 TOP_K = 10
 
 
-@lru_cache(maxsize=1)
-def build_policy():
+@lru_cache(maxsize=2)
+def build_policy(include_moe_finalize: bool = False):
     from flashinfer.comm.mnnvl_cutedsl import BT_ONLY_CONFIG, LL_ONLY_CONFIG
     from flashinfer.comm.mnnvl_cutedsl.config import (
         MNNVLCuteDSLConfig,
@@ -53,6 +53,11 @@ def build_policy():
         bt.finalize_routes,
         upper_bounds=(*bt.finalize_routes.upper_bounds[:-1], MAX_TOKENS),
     )
+    if include_moe_finalize:
+        finalize = MRangeDispatch(
+            upper_bounds=(24, 48, MAX_TOKENS),
+            targets=(ll.finalize_routes.targets[0], *bt.finalize_routes.targets),
+        )
     return MNNVLCuteDSLConfig(
         profiles=(replace(bt, all_reduce_routes=routes, finalize_routes=finalize),)
     )
@@ -90,7 +95,13 @@ class CuteAllReduce:
     workspace for each mode; sequential target and draft layers share them.
     """
 
-    def __init__(self, tp: "GroupCoordinator", epsilon: float):
+    def __init__(
+        self,
+        tp: "GroupCoordinator",
+        epsilon: float,
+        *,
+        include_moe_finalize: bool = False,
+    ):
         from flashinfer.comm.mnnvl_cutedsl_ar import (
             MNNVLCuteDSLAllReduceFusionWorkspace,
         )
@@ -124,7 +135,7 @@ class CuteAllReduce:
                             rms_eps=epsilon,
                             weight_bias=1.0,
                             include_shared_expert=True,
-                            config=build_policy(),
+                            config=build_policy(include_moe_finalize),
                             output_dtype=dtype,
                             add_residual=add_residual,
                         )
@@ -149,6 +160,12 @@ def initialize_for_config(config: "VllmConfig") -> None:
         return
     if not enabled_for_config(config):
         raise ValueError("CuTe AllReduce is unsupported for this model/configuration")
+    if config.kernel_config.enable_cute_moe_finalize:
+        # Cached graphs bypass the fusion pass that otherwise registers this op.
+        from vllm.model_executor.layers.fused_moe import (
+            qwen_cute_moe_tail,  # noqa: F401
+        )
+
     tp = get_tp_group()
     communicator = tp.device_communicator
     from .cuda_communicator import CudaCommunicator
@@ -157,7 +174,11 @@ def initialize_for_config(config: "VllmConfig") -> None:
     assert config.model_config is not None
     if communicator.cute_allreduce is None:
         epsilon = float(config.model_config.hf_text_config.rms_norm_eps)
-        communicator.cute_allreduce = CuteAllReduce(tp, epsilon)
+        communicator.cute_allreduce = CuteAllReduce(
+            tp,
+            epsilon,
+            include_moe_finalize=config.kernel_config.enable_cute_moe_finalize,
+        )
         logger.info("Initialized FlashInfer CuTe AllReduce for Qwen TP8")
 
 
