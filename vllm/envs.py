@@ -271,7 +271,6 @@ if TYPE_CHECKING:
     VLLM_ALLREDUCE_USE_SYMM_MEM: bool = True
     VLLM_ALLREDUCE_USE_FLASHINFER: bool = True
     VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC: bool = False
-    VLLM_USE_CUSTOM_AG_RS: bool = False
     VLLM_TUNED_CONFIG_FOLDER: str | None = None
     VLLM_ENABLE_STARTUP_PLAN: bool = False
     VLLM_GPT_OSS_SYSTEM_TOOL_MCP_LABELS: set[str] = set()
@@ -1897,9 +1896,6 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ROCM_FP8_MFMA_PAGE_ATTN": lambda: bool(
         int(os.getenv("VLLM_ROCM_FP8_MFMA_PAGE_ATTN", "0"))
     ),
-    # Prefer eligible custom TP kernels for uniform dimension-zero all-gather
-    # and reduce-scatter. Unsupported inputs keep the existing NCCL fallback.
-    "VLLM_USE_CUSTOM_AG_RS": lambda: bool(int(os.getenv("VLLM_USE_CUSTOM_AG_RS", "0"))),
     # Whether to use pytorch symmetric memory for allreduce
     "VLLM_ALLREDUCE_USE_SYMM_MEM": lambda: bool(
         int(os.getenv("VLLM_ALLREDUCE_USE_SYMM_MEM", "1"))

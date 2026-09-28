@@ -72,9 +72,12 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 rocm_aiter_ops.is_custom_all_reduce_enabled()
             )
 
+        from vllm.config import get_current_vllm_config_or_none
+
+        config = get_current_vllm_config_or_none()
         self.use_custom_allreduce = use_custom_allreduce
         self.use_custom_ag_rs = (
-            envs.VLLM_USE_CUSTOM_AG_RS
+            (config is None or config.kernel_config.enable_custom_ag_rs)
             and use_custom_allreduce
             and current_platform.is_cuda()
             and not envs.VLLM_BATCH_INVARIANT

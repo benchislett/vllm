@@ -24,11 +24,14 @@ import ray
 import torch
 import torch.distributed as dist
 
+from vllm.config import KernelConfig, VllmConfig, set_current_vllm_config
 from vllm.distributed.parallel_state import get_pp_group, get_tp_group
 from vllm.models.common.ops.sequence_parallel import sp_reduce_scatter
 from vllm.platforms import current_platform
+from vllm.utils.network_utils import get_open_port
 
 from ..utils import (
+    VLLM_PATH,
     ensure_model_parallel_initialized,
     init_test_distributed_environment,
     multi_process_parallel,
@@ -49,14 +52,19 @@ _REDUCE_SCATTER_EPOCH_ROW = 1
 _REDUCE_SCATTER_REGION_STAGE_OFFSET = 3
 
 
-@ray.remote(num_gpus=1, max_calls=1)
-def _run_communicator_dispatch_test(
-    monkeypatch, tp_size, pp_size, rank, distributed_init_port
-):
-    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+def _run_communicator_dispatch_test(rank, distributed_init_port, enabled):
+    tp_size = pp_size = 2
+    # All ranks inherit only the four GPUs reserved for their Ray task.
+    assert torch.accelerator.device_count() == 4
     device = torch.device(f"cuda:{rank}")
     torch.accelerator.set_device_index(device)
-    init_test_distributed_environment(tp_size, pp_size, rank, distributed_init_port)
+    kernel_config = (
+        KernelConfig() if enabled else KernelConfig(enable_custom_ag_rs=False)
+    )
+    with set_current_vllm_config(VllmConfig(kernel_config=kernel_config)):
+        init_test_distributed_environment(
+            tp_size, pp_size, rank, distributed_init_port, local_rank=rank
+        )
     group = get_tp_group()
     communicator = group.device_communicator
     assert not get_pp_group().device_communicator.use_custom_ag_rs
@@ -112,13 +120,31 @@ def _run_communicator_dispatch_test(
             torch.testing.assert_close(rs, expected_rs)
 
 
+@ray.remote(num_gpus=4, max_calls=1)
+def _run_communicator_dispatch_group(distributed_init_port, enabled):
+    torch.multiprocessing.spawn(
+        _run_communicator_dispatch_test,
+        args=(distributed_init_port, enabled),
+        nprocs=4,
+    )
+
+
 @pytest.mark.parametrize("enabled", [False, True])
 def test_custom_tp_collectives_through_communicator(monkeypatch, enabled):
     if not current_platform.is_cuda() or torch.accelerator.device_count() < 4:
         pytest.skip("Requires four CUDA GPUs with peer access")
-    monkeypatch.setenv("VLLM_USE_CUSTOM_AG_RS", str(int(enabled)))
+    for name in current_platform.ray_noset_device_env_vars:
+        monkeypatch.delenv(name, raising=False)
+    ray.init(
+        address="local",
+        runtime_env={"env_vars": {"PYTHONPATH": str(VLLM_PATH)}},
+    )
     # Two TP subgroups ensure the collectives do not accidentally use WORLD.
-    multi_process_parallel(monkeypatch, 2, 2, _run_communicator_dispatch_test)
+    port = get_open_port()
+    try:
+        ray.get(_run_communicator_dispatch_group.remote(port, enabled))
+    finally:
+        ray.shutdown()
 
 
 def _supports_multimem():
