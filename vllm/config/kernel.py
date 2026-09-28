@@ -235,8 +235,8 @@ class KernelConfig:
     Requires modular, normalized softmax MoE routing without EPLB. Preserves
     router weights and restores normal routing before serving. Both the default
     and balanced modes tune on synthetic dummy inputs, not production traffic.
-    Default routing can concentrate those inputs on a few experts; balancing
-    provides representative coverage of expert GEMM shapes during tuning.
+    Default routing uses random token IDs as inputs. Balancing forces uniform
+    expert activation, which may be more representative for tuning expert GEMMs.
     This policy is included in the configuration hash to separate tuning caches.
     """
 
