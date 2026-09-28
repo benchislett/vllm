@@ -226,6 +226,15 @@ class KernelConfig:
     Platform defaults appended automatically during VllmConfig.__post_init__.
     """
 
+    enable_custom_ag_rs: bool = True
+    """Prefer eligible custom TP all-gather and reduce-scatter kernels.
+
+    Applies to uniform dimension-zero collectives on CUDA. Existing dtype,
+    shape, topology and capacity checks retain the NCCL fallback when needed.
+    Honors disable_custom_all_reduce and batch-invariant execution. Set False
+    to use the existing collective dispatch for comparison or troubleshooting.
+    """
+
     enable_flashinfer_autotune: bool = None  # type: ignore[assignment]
     """If True, run FlashInfer autotuning during kernel warmup."""
 
