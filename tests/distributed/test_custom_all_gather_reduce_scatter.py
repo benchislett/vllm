@@ -17,12 +17,14 @@ reduce-scatter stages::
 Each stage contains one payload slot per source rank.
 """
 
+from unittest.mock import patch
+
 import pytest
 import ray
 import torch
 import torch.distributed as dist
 
-from vllm.distributed.parallel_state import get_tp_group
+from vllm.distributed.parallel_state import get_pp_group, get_tp_group
 from vllm.models.common.ops.sequence_parallel import sp_reduce_scatter
 from vllm.platforms import current_platform
 
@@ -45,6 +47,78 @@ _UINT32_MAX = _UINT32_MODULUS - 1
 _ALL_GATHER_EPOCH_ROW = 0
 _REDUCE_SCATTER_EPOCH_ROW = 1
 _REDUCE_SCATTER_REGION_STAGE_OFFSET = 3
+
+
+@ray.remote(num_gpus=1, max_calls=1)
+def _run_communicator_dispatch_test(
+    monkeypatch, tp_size, pp_size, rank, distributed_init_port
+):
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    device = torch.device(f"cuda:{rank}")
+    torch.accelerator.set_device_index(device)
+    init_test_distributed_environment(tp_size, pp_size, rank, distributed_init_port)
+    group = get_tp_group()
+    communicator = group.device_communicator
+    assert not get_pp_group().device_communicator.use_custom_ag_rs
+    custom = communicator.ca_comm
+    assert custom is not None and not custom.disabled
+    local_rank = group.rank_in_group
+
+    with (
+        patch.object(
+            communicator, "custom_all_gather", wraps=communicator.custom_all_gather
+        ) as gather,
+        patch.object(
+            communicator,
+            "custom_reduce_scatter",
+            wraps=communicator.custom_reduce_scatter,
+        ) as scatter,
+    ):
+        for dtype in (torch.bfloat16, torch.int64):
+            for dim in (0, -2, 1):
+                # Dispatch must preserve the layout contract for strided inputs.
+                base = torch.arange(128, device=device, dtype=dtype).reshape(8, 16)
+                x = (base + local_rank)[:, ::2]
+                peers = [(base + r)[:, ::2] for r in range(tp_size)]
+                expected_ag = torch.cat(peers, dim=dim)
+                expected_rs = sum(peers).chunk(tp_size, dim=dim)[local_rank]
+                eligible = communicator.use_custom_ag_rs and dim in (0, -2)
+                if dtype == torch.bfloat16:
+                    assert custom.should_custom_all_gather(x.contiguous())
+                    assert custom.should_custom_reduce_scatter(x.contiguous())
+                else:
+                    assert not custom.should_custom_all_gather(x.contiguous())
+                    assert not custom.should_custom_reduce_scatter(x.contiguous())
+                gather.reset_mock()
+                scatter.reset_mock()
+                torch.testing.assert_close(group.all_gather(x, dim), expected_ag)
+                torch.testing.assert_close(group.reduce_scatter(x, dim), expected_rs)
+                assert gather.call_count == int(eligible)
+                assert scatter.call_count == int(eligible)
+
+        x = torch.full((8, 16), local_rank + 1, dtype=torch.bfloat16, device=device)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            ag = group.all_gather(x, dim=0)
+            rs = group.reduce_scatter(x, dim=0)
+        for value in (2, 3):
+            x.fill_(value * (local_rank + 1))
+            graph.replay()
+            expected_ag = torch.cat(
+                [torch.full_like(x, value * (r + 1)) for r in range(tp_size)]
+            )
+            expected_rs = torch.full_like(rs, value * tp_size * (tp_size + 1) // 2)
+            torch.testing.assert_close(ag, expected_ag)
+            torch.testing.assert_close(rs, expected_rs)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_custom_tp_collectives_through_communicator(monkeypatch, enabled):
+    if not current_platform.is_cuda() or torch.accelerator.device_count() < 4:
+        pytest.skip("Requires four CUDA GPUs with peer access")
+    monkeypatch.setenv("VLLM_USE_CUSTOM_AG_RS", str(int(enabled)))
+    # Two TP subgroups ensure the collectives do not accidentally use WORLD.
+    multi_process_parallel(monkeypatch, 2, 2, _run_communicator_dispatch_test)
 
 
 def _supports_multimem():
