@@ -182,8 +182,9 @@ def test_fused_mtp_head_ratio_guard(num_v_heads: int, expected: bool) -> None:
     )
 
 
+@pytest.mark.parametrize("quantized", [False, True])
 @torch.inference_mode()
-def test_fused_forward_uses_packed_entrypoint() -> None:
+def test_fused_forward_uses_packed_entrypoint(quantized) -> None:
     """Fused mode keeps projected QKVZ and BA packed through the model op."""
     device = torch.device("cuda")
     num_tokens = 3
@@ -192,6 +193,19 @@ def test_fused_forward_uses_packed_entrypoint() -> None:
         num_tokens, CONV_DIM + HV * V, dtype=torch.bfloat16, device=device
     )
     ba = torch.randn(num_tokens, 2 * HV, dtype=torch.bfloat16, device=device)
+    from vllm.model_executor.layers.fusion.quant_activation import QuantizedActivation
+
+    scale = torch.ones(1, device=device) if quantized else None
+
+    def project(x):
+        if quantized:
+            assert isinstance(x, QuantizedActivation)
+            assert x.orig_dtype == torch.bfloat16
+            assert x.scale is scale
+            assert x.orig_shape == x.data.shape
+            x = x.data.to(torch.bfloat16)
+        return x, None
+
     layer = types.SimpleNamespace(
         prefix=PREFIX,
         enable_fused_gdn_decode=True,
@@ -203,7 +217,7 @@ def test_fused_forward_uses_packed_entrypoint() -> None:
         head_v_dim=V,
         in_proj_qkvz=lambda _: (mixed_qkvz, None),
         in_proj_ba=lambda _: (ba, None),
-        out_proj=lambda x: (x, None),
+        out_proj=project,
     )
     layer.forward_cuda = types.MethodType(
         QwenGatedDeltaNetAttention.forward_cuda, layer
@@ -215,13 +229,19 @@ def test_fused_forward_uses_packed_entrypoint() -> None:
         output: torch.Tensor,
         *,
         layer_name: str,
+        output_scale: torch.Tensor | None = None,
     ) -> None:
+        assert output_scale is scale
         assert actual_qkvz is mixed_qkvz
         assert actual_ba is ba
         assert layer_name == _encode_layer_name(PREFIX)
         output.fill_(1)
 
     with (
+        patch(
+            "vllm.model_executor.layers.mamba.gdn.output_quant.gdn_output_quant_scale",
+            return_value=scale,
+        ),
         patch.object(
             torch.ops.vllm,
             "qwen_gdn_attention_core_fused_norm_packed",
@@ -390,3 +410,179 @@ def test_fused_model_path_matches_reference(
         atol=3e-2,
         rtol=3e-2,
     )
+
+
+@pytest.mark.parametrize("heads,width", [(h, w) for h in (2, 4) for w in (12, 16)])
+@torch.inference_mode()
+def test_wide_fused_model_graph_checkpoints(heads, width):
+    """Convolution, wide recurrence and norm preserve serving pages on replay."""
+    from math import prod
+
+    from vllm.forward_context import ForwardContext, override_forward_context
+    from vllm.v1.attention.backend import AttentionMetadata
+
+    if not current_platform.is_device_capability(107):
+        pytest.skip("Wide GDN is qualified on SM107")
+    torch.manual_seed(17)
+    batch, hv = 2, heads * 8
+    tokens = batch * width
+    qkv_dim = (2 * heads + hv) * K
+    conv_shape, state_shape = MambaStateShapeCalculator.gated_delta_net_state_shape(
+        1, heads, hv, K, V, CONV_KERNEL, width - 1
+    )
+    conv_size, state_size = prod(conv_shape), prod(state_shape)
+    pages = torch.full(
+        (tokens + 1, conv_size + state_size + 128),
+        37.0,
+        device="cuda",
+        dtype=torch.bfloat16,
+    )
+    conv = pages[:, :conv_size].view(tokens + 1, *conv_shape)
+    state = pages[:, conv_size : conv_size + state_size].view(tokens + 1, *state_shape)
+
+    def rand(*shape, dtype=torch.bfloat16):
+        return (0.1 * torch.randn(shape, device="cuda")).to(dtype)
+
+    conv.copy_(rand(*conv.shape))
+    state.copy_(rand(*state.shape))
+    layer = _build_layer(
+        _make_vllm_config(),
+        conv,
+        state,
+        rand(hv, dtype=torch.float32),
+        rand(hv),
+        rand(qkv_dim, 1, CONV_KERNEL),
+        rand(V),
+        "silu",
+    )
+    layer.num_k_heads, layer.num_v_heads = heads, hv
+    layer.key_dim, layer.value_dim = heads * K, hv * V
+    packed, ba = rand(tokens, qkv_dim + hv * V), rand(tokens, 2 * hv)
+    original_pages, original_packed = pages.clone(), packed.clone()
+    metadata = GDNAttentionMetadata(
+        num_prefills=0,
+        num_prefill_tokens=0,
+        num_decodes=0,
+        num_decode_tokens=0,
+        num_spec_decodes=batch,
+        num_spec_decode_tokens=tokens,
+        num_actual_tokens=tokens,
+        spec_query_start_loc=torch.arange(batch + 1, device="cuda", dtype=torch.int32)
+        * width,
+        spec_state_indices_tensor=torch.arange(
+            1, tokens + 1, device="cuda", dtype=torch.int32
+        ).view(batch, width),
+        spec_sequence_masks=torch.ones(batch, device="cuda", dtype=torch.bool),
+        num_accepted_tokens=torch.ones(batch, device="cuda", dtype=torch.int32),
+    )
+    context = ForwardContext(
+        attn_metadata={PREFIX: cast(AttentionMetadata, metadata)},
+        no_compile_layers={PREFIX: layer},
+        slot_mapping={},
+    )
+    assert metadata.num_accepted_tokens is not None
+    assert metadata.spec_query_start_loc is not None
+    out = torch.empty(tokens + 3, hv, V, device="cuda", dtype=torch.bfloat16)
+
+    def run():
+        torch.ops.vllm.qwen_gdn_attention_core_fused_norm_packed(
+            packed, ba, out, layer_name=_encode_layer_name(PREFIX)
+        )
+
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with override_forward_context(context), torch.cuda.stream(stream):
+        run()
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with override_forward_context(context), torch.cuda.graph(graph, stream=stream):
+        run()
+    for accepted in (1, width, width - 1):
+        metadata.num_accepted_tokens.fill_(accepted)
+        if accepted == width - 1:
+            metadata.spec_query_start_loc[-1] = tokens - width
+        pages.copy_(original_pages)
+        packed.copy_(original_packed)
+        with (
+            override_forward_context(context),
+            patch.object(layer, "_can_use_fused_gdn_mtp_decode", return_value=False),
+        ):
+            layer._forward_core_fused_norm_packed(packed, ba, out)
+        expected = out.clone()
+        expected[int(metadata.spec_query_start_loc[-1]) :].zero_()
+        expected_pages = pages.clone()
+        pages.copy_(original_pages)
+        packed.copy_(original_packed)
+        graph.replay()
+        error = (out.float() - expected.float()).norm() / expected.float().norm()
+        assert error < 5e-4
+        torch.testing.assert_close(
+            conv, expected_pages[:, :conv_size].view_as(conv), atol=0, rtol=0
+        )
+        torch.testing.assert_close(
+            state,
+            expected_pages[:, conv_size : conv_size + state_size].view_as(state),
+            atol=0.001,
+            rtol=0.001,
+        )
+        assert torch.all(pages[:, -128:] == 37)
+
+
+@pytest.mark.parametrize("tp_size", [4, 8])
+def test_wide_gdn_quant_selection_is_traceable(tp_size, default_vllm_config):
+    """Even the BF16 fallback must avoid querying NVML during model tracing."""
+    from vllm.model_executor.kernels.linear.scaled_mm.flashinfer import (
+        FlashInferFP8ScaledMMLinearKernel,
+    )
+    from vllm.model_executor.kernels.linear.scaled_mm.ScaledMMLinearKernel import (
+        FP8ScaledMMLinearLayerConfig,
+    )
+    from vllm.model_executor.layers.linear import RowParallelLinear
+    from vllm.model_executor.layers.mamba.gdn.output_quant import gdn_output_quant_scale
+    from vllm.model_executor.layers.quantization.utils.quant_utils import (
+        kFp8StaticTensorSym,
+    )
+
+    projection = RowParallelLinear.__new__(RowParallelLinear)
+    torch.nn.Module.__init__(projection)
+    projection.input_is_parallel = True
+    projection._input_quant_key = kFp8StaticTensorSym
+    projection.weight = torch.empty(2048, 16, device="cuda", dtype=torch.float8_e4m3fn)
+    projection.weight_scale = torch.ones(1, device="cuda")
+    projection.input_scale = torch.full((1,), 0.5, device="cuda")
+    kernel = FlashInferFP8ScaledMMLinearKernel(
+        FP8ScaledMMLinearLayerConfig(
+            weight_quant_key=kFp8StaticTensorSym,
+            activation_quant_key=kFp8StaticTensorSym,
+            weight_shape=(2048, 16),
+            input_dtype=torch.bfloat16,
+            out_dtype=torch.bfloat16,
+        ),
+        ("weight", "weight_scale", "input_scale", "input_scale_ub"),
+    )
+    projection.quant_method = types.SimpleNamespace(kernel=kernel)
+    layer = types.SimpleNamespace(
+        out_proj=projection,
+        _is_sm107=True,
+        gdn_decode_kernel="cuda",
+        num_k_heads=16,
+        num_v_heads=128,
+        tp_size=tp_size,
+        head_k_dim=128,
+        head_v_dim=128,
+        norm=types.SimpleNamespace(
+            weight=torch.ones(128, device="cuda", dtype=torch.bfloat16),
+            activation="silu",
+        ),
+        dt_bias=torch.zeros(128, device="cuda", dtype=torch.bfloat16),
+        layer_norm_epsilon=1e-6,
+    )
+
+    def forward(x):
+        scale = gdn_output_quant_scale(layer)
+        return x + 1 if scale is None else x * scale
+
+    x = torch.ones(2, device="cuda")
+    compiled = torch.compile(forward, backend="eager", fullgraph=True)
+    expected = x + 1 if tp_size == 4 else x * projection.input_scale
+    torch.testing.assert_close(compiled(x), expected)
