@@ -137,3 +137,121 @@ def test_gdn_concurrent_fp8_pair_graph_replay(m, breakable, scalar_shape):
                 atol=0,
                 rtol=0,
             )
+
+
+@pytest.mark.parametrize("rows,columns", [(24, 4608), (192, 9216), (48, 4608)])
+@torch.inference_mode()
+def test_gdn_exact_shape_tuning_and_capture(rows, columns, monkeypatch):
+    """Exact rows are profiled before capture; unqualified rows retain buckets."""
+    from flashinfer import autotune
+
+    if not current_platform.is_device_capability(107):
+        pytest.skip("Exact GDN projection policy is qualified on SM107")
+    torch.manual_seed(11)
+    x = torch.randn(rows, 8192, device="cuda").to(torch.float8_e4m3fn)
+    weights = [
+        torch.randn(n, 8192, device="cuda").to(x.dtype).t()
+        for n in (columns, columns // 144)
+    ]
+    scales = [torch.tensor(s, device="cuda") for s in (0.11, 0.23, 0.37)]
+    args = (x, *weights, *scales)
+    from flashinfer.autotuner import AutoTuner
+
+    tuner = AutoTuner.get()
+    choose = tuner.choose_one
+    mapped_rows = []
+
+    def record(name, runners, config, inputs, *extra, **kwargs):
+        if name == "fp8_gemm":
+            mapped_rows.append(tuner.get_effective_map_to_tuning_buckets(config)(rows))
+        return choose(name, runners, config, inputs, *extra, **kwargs)
+
+    monkeypatch.setattr(tuner, "choose_one", record)
+    # Numerical/graph validation uses real cuBLAS and real autotuning.
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream), autotune(True):
+        gdn_input_gemms(*args)
+    torch.accelerator.synchronize()
+    assert len(mapped_rows) == 2
+    if rows != 48:
+        assert mapped_rows == [rows, rows]
+    else:
+        assert all(m != rows for m in mapped_rows)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        outputs = gdn_input_gemms(*args)
+    for sign in (1.0, -1.0):
+        x.copy_((x.float() * sign).to(x.dtype))
+        graph.replay()
+        for actual, weight, scale in zip(outputs, weights, scales[1:]):
+            expected = (x.float() @ weight.float()) * scales[0] * scale
+            torch.testing.assert_close(actual.float(), expected, atol=0.02, rtol=0.01)
+
+
+@torch.inference_mode()
+def test_gdn_exact_warmup_cache_reload(tmp_path, monkeypatch):
+    """Startup preserves default buckets and adds reloadable exact-row records."""
+    from flashinfer import autotune
+    from flashinfer.autotuner import AutoTuner
+
+    from vllm.model_executor.layers.mamba.gdn.input_projection import (
+        autotune_gdn_input_projections,
+    )
+    from vllm.model_executor.layers.mamba.gdn.qwen_gdn_linear_attn import (
+        QwenGatedDeltaNetAttention,
+    )
+
+    if not current_platform.is_device_capability(107):
+        pytest.skip("Exact GDN projection policy is qualified on SM107")
+    torch.manual_seed(17)
+    # Only the post-load projection attributes are needed by the warmup helper.
+    layer = QwenGatedDeltaNetAttention.__new__(QwenGatedDeltaNetAttention)
+    torch.nn.Module.__init__(layer)
+    layer._concurrent_input_gemm = True
+    for name, columns, scale in (
+        ("in_proj_qkvz", 4608, 0.23),
+        ("in_proj_ba", 32, 0.37),
+    ):
+        projection = torch.nn.Module()
+        projection.weight = (
+            torch.randn(columns, 8192, device="cuda").to(torch.float8_e4m3fn).t()
+        )
+        projection.input_scale = torch.tensor(0.11, device="cuda")
+        projection.weight_scale = torch.tensor(scale, device="cuda")
+        setattr(layer, name, projection)
+    model = torch.nn.ModuleList([layer])
+    tuner = AutoTuner.get()
+    tuner.clear_cache()
+    cache = str(tmp_path / "gdn-exact.json")
+    with autotune(True, cache=cache):
+        autotune_gdn_input_projections(model, max_tokens=31)
+    x = torch.randn(24, 8192, device="cuda").to(torch.float8_e4m3fn)
+    qkvz, ba = layer.in_proj_qkvz, layer.in_proj_ba
+    args = (
+        x,
+        qkvz.weight,
+        ba.weight,
+        qkvz.input_scale,
+        qkvz.weight_scale,
+        ba.weight_scale,
+    )
+    expected = [gdn_input_gemms(x[:rows], *args[1:]) for rows in (16, 24)]
+    tuner.clear_cache()
+    tuner.reset_statistics()
+    search = tuner.search_cache
+    hits = []
+
+    def record(*args, **kwargs):
+        result = search(*args, **kwargs)
+        hits.append(result[0])
+        return result
+
+    monkeypatch.setattr(tuner, "search_cache", record)
+    with autotune(False, cache=cache):
+        actual = [gdn_input_gemms(x[:rows], *args[1:]) for rows in (16, 24)]
+    assert hits == [True] * 4
+    assert not tuner.stats.tuned_op_total_configs
+    for pair, reference in zip(actual, expected):
+        for got, want in zip(pair, reference):
+            torch.testing.assert_close(got, want, atol=0, rtol=0)

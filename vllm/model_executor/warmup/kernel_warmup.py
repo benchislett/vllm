@@ -434,6 +434,13 @@ def flashinfer_autotune(runner: "GPUModelRunner") -> None:
             _run_flashinfer_autotune_dummy_runs(runner)
             replayssm_autotune_warmup(runner)
             _autotune_kimi_k3_kda_qkvg(runner.get_model())
+            from vllm.model_executor.layers.mamba.gdn.input_projection import (
+                autotune_gdn_input_projections,
+            )
+
+            autotune_gdn_input_projections(
+                runner.get_model(), runner.scheduler_config.max_num_batched_tokens
+            )
     finally:
         set_autotune_process_group(None)
 
