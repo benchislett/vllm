@@ -2706,10 +2706,42 @@ def fused_gdn_decode_post_conv_mtp(
     scale: float = 128**-0.5,
     norm_eps: float = 1e-5,
     output_gate_activation: str = "silu",
+    enable_pdl: bool = False,
+    output_scale: torch.Tensor | None = None,
 ) -> torch.Tensor:
+    """Run GDN; PDL opt-in requires a predecessor that establishes state readiness."""
     if out is None:
-        out = torch.empty_like(output_gate)
-    torch.ops._C.fused_gdn_decode_post_conv_mtp(
+        out = torch.empty_like(
+            output_gate,
+            dtype=torch.bfloat16 if output_scale is None else torch.float8_e4m3fn,
+        )
+    if output_scale is not None:
+        torch.ops._C.fused_gdn_decode_post_conv_mtp_fp8(
+            mixed_qkv,
+            a,
+            b,
+            A_log,
+            dt_bias,
+            state_indices,
+            cu_seqlens,
+            num_accepted_tokens,
+            state,
+            output_gate,
+            norm_weight,
+            out,
+            scale,
+            norm_eps,
+            output_gate_activation,
+            output_scale,
+            enable_pdl,
+        )
+        return out
+    kernel = (
+        torch.ops._C.fused_gdn_decode_post_conv_mtp_pdl
+        if enable_pdl
+        else torch.ops._C.fused_gdn_decode_post_conv_mtp
+    )
+    kernel(
         mixed_qkv,
         a,
         b,

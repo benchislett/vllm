@@ -11,6 +11,9 @@ from vllm.model_executor.layers.mamba.ops.causal_conv1d import (
     causal_conv1d_fn,
     causal_conv1d_update,
 )
+from vllm.model_executor.layers.mamba.ops.causal_conv1d_mtp import (
+    try_causal_conv1d_update_mtp,
+)
 from vllm.platforms import current_platform
 from vllm.utils.torch_utils import set_random_seed
 from vllm.v1.attention.backends.utils import NULL_BLOCK_ID
@@ -358,3 +361,143 @@ def test_causal_conv1d_varlen(
     )
     unpadded_out = out[:, : out_ref_tensor.shape[-1]]
     assert torch.allclose(unpadded_out, out_ref_tensor, rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize("batch", [1, 8, 16, 32, 33])
+@pytest.mark.parametrize("qlen", [1, 2, 4, 8])
+@pytest.mark.parametrize("compact_cache", [False, True])
+@torch.inference_mode()
+def test_causal_conv1d_mtp_update(batch, qlen, compact_cache):
+    """The gated MTP update preserves raw Z and every conv-history position."""
+    if not current_platform.is_cuda():
+        pytest.skip("The small-batch MTP specialization requires CUDA")
+    set_random_seed(1701)
+    tokens = batch * qlen
+    cache_len = qlen + 2 if compact_cache else 10
+    packed = torch.randn(tokens, 4608, device=DEVICE, dtype=torch.bfloat16)
+    packed_ref = packed.clone()
+    initial = torch.randn(
+        batch * qlen + 1, cache_len, 2560, device=DEVICE, dtype=torch.bfloat16
+    ).transpose(1, 2)
+    state = initial.clone()
+    state_ref = initial.clone()
+    weight = torch.randn(2560, 4, device=DEVICE, dtype=torch.bfloat16)
+    indices = torch.arange(1, batch * qlen + 1, device=DEVICE, dtype=torch.int32).view(
+        batch, qlen
+    )[:, 0]
+    accepted = torch.ones(batch, device=DEVICE, dtype=torch.int32)
+    cu = torch.arange(batch + 1, device=DEVICE, dtype=torch.int32) * qlen
+
+    def run():
+        return try_causal_conv1d_update_mtp(
+            packed[:, :2560],
+            state,
+            weight,
+            None,
+            "silu",
+            indices,
+            accepted,
+            cu,
+            qlen,
+            tokens,
+        )
+
+    eligible = current_platform.is_device_capability(107) and batch <= 32 and qlen > 1
+    assert run() == eligible
+    if not eligible:
+        torch.testing.assert_close(packed, packed_ref, atol=0, rtol=0)
+        torch.testing.assert_close(state, initial, atol=0, rtol=0)
+        return
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        run()
+    state.copy_(initial)
+    for step in range(4):
+        # Replay with changed acceptance and a null/empty last request. The
+        # cache evolves, and the same allocation continues to hold raw Z.
+        packed_ref.normal_()
+        packed.copy_(packed_ref)
+        accepted.fill_(1 if step % 2 == 0 else qlen)
+        if step == 2:
+            cu[-1] = cu[-2]
+        if step == 3:
+            cu[-1] = tokens
+            indices[-1] = 0
+        causal_conv1d_update(
+            packed_ref[:, :2560],
+            state_ref,
+            weight,
+            activation="silu",
+            conv_state_indices=indices,
+            num_accepted_tokens=accepted,
+            query_start_loc=cu,
+            max_query_len=qlen,
+        )
+        graph.replay()
+        assert torch.equal(packed.view(torch.int16), packed_ref.view(torch.int16))
+        assert torch.equal(state.view(torch.int16), state_ref.view(torch.int16))
+
+
+@pytest.mark.parametrize(
+    ("batch", "slot_stride"),
+    [(1, 287744), (8, 287872), (32, 287872), (1, (1 << 30) + 128)],
+)
+@torch.inference_mode()
+def test_causal_conv1d_mtp_shared_cache_pages(batch, slot_stride):
+    """Shared pages select tuned conv without corrupting adjacent state bytes."""
+    if not current_platform.is_cuda() or not current_platform.is_device_capability(107):
+        pytest.skip("The small-batch MTP specialization requires SM107")
+    set_random_seed(1702)
+    slots = batch + 2
+    # Only initialize the views and guards: the large-offset case reserves a
+    # 4 GiB gap to exercise slot*stride overflowing int32 with slot=2.
+    backing = torch.empty(
+        (slots - 1) * slot_stride + 25600 + 16, device=DEVICE, dtype=torch.bfloat16
+    )
+    state = backing.as_strided((slots, 2560, 10), (slot_stride, 1, 2560))
+    guards = backing.as_strided((slots, 16), (slot_stride, 1), 25600)
+    guards.fill_(17)
+    state.normal_()
+    initial = state.clone()
+    state_ref = initial.clone()
+    packed = torch.randn(batch * 8, 4608, device=DEVICE, dtype=torch.bfloat16)
+    packed_ref = packed.clone()
+    weight = torch.randn(2560, 4, device=DEVICE, dtype=torch.bfloat16)
+    indices = torch.arange(2, slots, device=DEVICE, dtype=torch.int32)
+    accepted = torch.full((batch,), 8, device=DEVICE, dtype=torch.int32)
+    cu = torch.arange(batch + 1, device=DEVICE, dtype=torch.int32) * 8
+
+    def run():
+        return try_causal_conv1d_update_mtp(
+            packed[:, :2560],
+            state,
+            weight,
+            None,
+            "silu",
+            indices,
+            accepted,
+            cu,
+            8,
+            batch * 8,
+        )
+
+    assert run()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        assert run()
+    state.copy_(initial)
+    packed.copy_(packed_ref)
+    causal_conv1d_update(
+        packed_ref[:, :2560],
+        state_ref,
+        weight,
+        activation="silu",
+        conv_state_indices=indices,
+        num_accepted_tokens=accepted,
+        query_start_loc=cu,
+        max_query_len=8,
+    )
+    graph.replay()
+    torch.testing.assert_close(packed, packed_ref, atol=0, rtol=0)
+    torch.testing.assert_close(state, state_ref, atol=0, rtol=0)
+    assert torch.all(guards == 17)
