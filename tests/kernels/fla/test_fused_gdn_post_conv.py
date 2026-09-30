@@ -225,6 +225,29 @@ def test_fused_post_conv_l0():
         pytest.param(8, 4, (4, 2, 0), torch.float32, torch.bfloat16, id="tp4-ragged"),
         pytest.param(8, 16, (8,), torch.float32, torch.bfloat16, id="tp16-max"),
         pytest.param(8, 4, (8,), torch.bfloat16, torch.float32, id="tp4-max"),
+        # The low-latency TP8 policies and both dispatch boundaries. Keep the
+        # other dtypes/head ratios below to exercise the general fallback.
+        pytest.param(8, 8, (1,), torch.bfloat16, torch.bfloat16, id="tp8-ar"),
+        pytest.param(8, 8, (2,), torch.bfloat16, torch.bfloat16, id="tp8-bs1-q2"),
+        pytest.param(8, 8, (4,), torch.bfloat16, torch.bfloat16, id="tp8-bs1-q4"),
+        pytest.param(8, 8, (8,), torch.bfloat16, torch.bfloat16, id="tp8-bs1-q8"),
+        pytest.param(8, 8, (8,) * 2, torch.bfloat16, torch.bfloat16, id="tp8-bs2"),
+        pytest.param(8, 8, (8,) * 4, torch.bfloat16, torch.bfloat16, id="tp8-bs4"),
+        pytest.param(8, 8, (8,) * 8, torch.bfloat16, torch.bfloat16, id="tp8-bs8"),
+        pytest.param(8, 8, (8,) * 9, torch.bfloat16, torch.bfloat16, id="tp8-bs9"),
+        pytest.param(8, 8, (8,) * 13, torch.bfloat16, torch.bfloat16, id="tp8-bs13"),
+        pytest.param(8, 8, (8,) * 14, torch.bfloat16, torch.bfloat16, id="tp8-bs14"),
+        pytest.param(8, 8, (8,) * 16, torch.bfloat16, torch.bfloat16, id="tp8-bs16"),
+        pytest.param(8, 8, (8,) * 32, torch.bfloat16, torch.bfloat16, id="tp8-bs32"),
+        pytest.param(8, 8, (8,) * 33, torch.bfloat16, torch.bfloat16, id="tp8-bs33"),
+        pytest.param(
+            8,
+            8,
+            (8, 4, 2, 1, 8, 4, 2, 0),
+            torch.bfloat16,
+            torch.bfloat16,
+            id="tp8-ragged",
+        ),
         pytest.param(
             1,
             1,
@@ -268,6 +291,7 @@ def test_fused_post_conv_l0():
     ],
 )
 @pytest.mark.parametrize("output_gate_activation", ["silu", "sigmoid"])
+@pytest.mark.parametrize("dt_dtype", [torch.float32, torch.bfloat16])
 @torch.inference_mode()
 def test_fused_gdn_decode_post_conv_mtp_head_ratios(
     head_ratio: int,
@@ -276,6 +300,7 @@ def test_fused_gdn_decode_post_conv_mtp_head_ratios(
     state_dtype: torch.dtype,
     norm_dtype: torch.dtype,
     output_gate_activation: str,
+    dt_dtype: torch.dtype,
 ) -> None:
     if torch.cuda.get_device_capability() < (8, 0):
         pytest.skip("fused GDN decode MTP requires compute capability 8.0+")
@@ -310,10 +335,10 @@ def test_fused_gdn_decode_post_conv_mtp_head_ratios(
     value = value.view(1, num_tokens, HV, V)
     ba = torch.randn(num_tokens, 2 * HV, dtype=torch.bfloat16, device=device)
     b, a = ba.chunk(2, dim=-1)
-    assert not a.is_contiguous()
-    assert not b.is_contiguous()
+    assert a.stride(0) == 2 * HV
+    assert b.stride(0) == 2 * HV
     A_log = 0.5 * torch.randn(HV, dtype=torch.float32, device=device)
-    dt_bias = 0.1 * torch.randn(HV, dtype=torch.float32, device=device)
+    dt_bias = (0.1 * torch.randn(HV, dtype=torch.float32, device=device)).to(dt_dtype)
     output_gate = torch.randn(num_tokens, HV, V, dtype=torch.bfloat16, device=device)
     norm_weight = torch.randn(V, dtype=norm_dtype, device=device)
     state_ref = (
@@ -332,6 +357,28 @@ def test_fused_gdn_decode_post_conv_mtp_head_ratios(
     if query_lengths[-1] == 0:
         state_indices[-1].zero_()
 
+    actual = torch.empty_like(output_gate)
+
+    def run_kernel() -> None:
+        ops.fused_gdn_decode_post_conv_mtp(
+            mixed_qkv=mixed_qkv,
+            a=a,
+            b=b,
+            A_log=A_log,
+            dt_bias=dt_bias,
+            state_indices=state_indices,
+            cu_seqlens=cu_seqlens,
+            num_accepted_tokens=num_accepted_tokens,
+            state=state_actual,
+            output_gate=output_gate,
+            norm_weight=norm_weight,
+            out=actual,
+            scale=scale,
+            norm_eps=eps,
+            output_gate_activation=output_gate_activation,
+        )
+
+    graph = None
     for step, accepted_tokens in enumerate((1, min(2, state_width), state_width)):
         num_accepted_tokens.fill_(accepted_tokens)
         if query_lengths[-1] == 0:
@@ -361,23 +408,18 @@ def test_fused_gdn_decode_post_conv_mtp_head_ratios(
             norm_before_gate=True,
             activation=output_gate_activation,
         )
-        actual = ops.fused_gdn_decode_post_conv_mtp(
-            mixed_qkv=mixed_qkv,
-            a=a,
-            b=b,
-            A_log=A_log,
-            dt_bias=dt_bias,
-            state_indices=state_indices,
-            cu_seqlens=cu_seqlens,
-            num_accepted_tokens=num_accepted_tokens,
-            state=state_actual,
-            output_gate=output_gate,
-            norm_weight=norm_weight,
-            out=torch.empty_like(output_gate),
-            scale=scale,
-            norm_eps=eps,
-            output_gate_activation=output_gate_activation,
-        )
+        if step == 1:
+            # Capture after the eager warmup, then change acceptance metadata
+            # for the next replay without recapturing or resetting the cache.
+            saved_state = state_actual.clone()
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                run_kernel()
+            state_actual.copy_(saved_state)
+        if graph is None:
+            run_kernel()
+        else:
+            graph.replay()
 
         output_error = (actual.float() - expected.float()).norm()
         output_relative_l2 = output_error / expected.float().norm().clamp_min(1e-20)
@@ -386,4 +428,72 @@ def test_fused_gdn_decode_post_conv_mtp_head_ratios(
             f"{output_relative_l2.item():.6g}"
         )
 
+        # Check every token's snapshot after each acceptance transition, not
+        # only the final state after the last transition.
+        state_error = (state_actual.float() - state_ref.float()).norm()
+        state_relative_l2 = state_error / state_ref.float().norm().clamp_min(1e-20)
+        assert state_relative_l2 < 5e-4, (
+            f"MTP state relative L2 mismatch at step {step}: "
+            f"{state_relative_l2.item():.6g}"
+        )
+
     torch.testing.assert_close(state_actual, state_ref, atol=3e-2, rtol=3e-2)
+
+
+@pytest.mark.parametrize("batch", [1, 8, 20, 32])
+@pytest.mark.parametrize("qlen", [2, 8])
+@pytest.mark.parametrize("enable_pdl", [False, True])
+@torch.inference_mode()
+def test_fused_gdn_decode_post_conv_mtp_fp8(batch, qlen, enable_pdl):
+    """The optional store preserves BF16 rounding and every recurrent state."""
+    if torch.cuda.get_device_capability() != (10, 7):
+        pytest.skip("FP8 GDN output is qualified on SM107")
+    torch.manual_seed(43)
+    tokens = batch * qlen
+    packed = torch.randn(tokens, 4608, dtype=torch.bfloat16, device="cuda")
+    ba = torch.randn(tokens, 32, dtype=torch.bfloat16, device="cuda")
+    initial = torch.randn(tokens + 1, 16, 128, 128, device="cuda").bfloat16()
+    indices = torch.arange(1, tokens + 1, dtype=torch.int32, device="cuda").view(
+        batch, qlen
+    )
+    accepted = torch.ones(batch, dtype=torch.int32, device="cuda")
+    kwargs = dict(
+        mixed_qkv=packed[:, :2560],
+        a=ba[:, 16:],
+        b=ba[:, :16],
+        A_log=torch.randn(16, device="cuda"),
+        dt_bias=torch.randn(16, dtype=torch.bfloat16, device="cuda"),
+        state_indices=indices,
+        cu_seqlens=torch.arange(batch + 1, dtype=torch.int32, device="cuda") * qlen,
+        num_accepted_tokens=accepted,
+        output_gate=packed[:, 2560:].reshape(tokens, 16, 128),
+        norm_weight=torch.randn(128, dtype=torch.bfloat16, device="cuda"),
+        norm_eps=1e-6,
+        enable_pdl=enable_pdl,
+    )
+    scale = torch.tensor(0.012, device="cuda")
+    state, reference_state = initial.clone(), initial.clone()
+    quantized = torch.empty(tokens, 16, 128, dtype=torch.float8_e4m3fn, device="cuda")
+    # A non-PDL predecessor establishes state readiness before each launch.
+    ops.fused_gdn_decode_post_conv_mtp(
+        **kwargs, state=state, out=quantized, output_scale=scale
+    )
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        ops.fused_gdn_decode_post_conv_mtp(
+            **kwargs, state=state, out=quantized, output_scale=scale
+        )
+    for value, count in ((0.00012, 1), (0.012, qlen), (1.2, qlen), (0.012, 0)):
+        scale.fill_(value)
+        accepted.fill_(count)
+        state.copy_(initial)
+        reference_state.copy_(initial)
+        bf16 = ops.fused_gdn_decode_post_conv_mtp(**kwargs, state=reference_state)
+        expected = (
+            (bf16.float() * scale.reciprocal()).clamp(-448, 448).to(quantized.dtype)
+        )
+        graph.replay()
+        torch.testing.assert_close(
+            quantized.view(torch.uint8), expected.view(torch.uint8), atol=0, rtol=0
+        )
+        torch.testing.assert_close(state, reference_state, atol=0, rtol=0)

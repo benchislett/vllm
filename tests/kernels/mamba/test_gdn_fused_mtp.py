@@ -100,18 +100,20 @@ def _build_layer(
     conv_weight: torch.Tensor,
     norm_weight: torch.Tensor,
     output_gate_activation: str,
+    num_k_heads: int = H,
+    num_v_heads: int = HV,
 ):
     layer = types.SimpleNamespace(
         prefix=PREFIX,
         enable_packed_recurrent_decode=False,
         disable_tp_for_ba_proj=False,
         tp_size=1,
-        num_k_heads=H,
-        num_v_heads=HV,
+        num_k_heads=num_k_heads,
+        num_v_heads=num_v_heads,
         head_k_dim=K,
         head_v_dim=V,
-        key_dim=K,
-        value_dim=HV * V,
+        key_dim=num_k_heads * K,
+        value_dim=num_v_heads * V,
         activation="silu",
         A_log=a_log,
         dt_bias=dt_bias,
@@ -195,6 +197,8 @@ def test_fused_forward_uses_packed_entrypoint() -> None:
     layer = types.SimpleNamespace(
         prefix=PREFIX,
         enable_fused_gdn_decode=True,
+        gdn_decode_kernel="cuda",
+        num_k_heads=H,
         norm=types.SimpleNamespace(
             weight=torch.empty(V, dtype=torch.bfloat16, device=device)
         ),
@@ -215,7 +219,9 @@ def test_fused_forward_uses_packed_entrypoint() -> None:
         output: torch.Tensor,
         *,
         layer_name: str,
+        output_scale: torch.Tensor | None = None,
     ) -> None:
+        assert output_scale is None
         assert actual_qkvz is mixed_qkvz
         assert actual_ba is ba
         assert layer_name == _encode_layer_name(PREFIX)
@@ -236,6 +242,87 @@ def test_fused_forward_uses_packed_entrypoint() -> None:
     torch.testing.assert_close(output, torch.ones_like(output))
 
 
+@pytest.mark.parametrize("method_kind", ["modelopt", "fp8", "compressed_tensors"])
+def test_fused_mtp_output_quant_consumer_contract(method_kind):
+    """Only compatible static FP8 projections may bypass input quantization."""
+    from vllm.model_executor.kernels.linear.scaled_mm.cutlass import (
+        CutlassFP8ScaledMMLinearKernel,
+    )
+    from vllm.model_executor.kernels.linear.scaled_mm.ScaledMMLinearKernel import (
+        FP8ScaledMMLinearLayerConfig,
+    )
+    from vllm.model_executor.layers.linear import RowParallelLinear
+    from vllm.model_executor.layers.mamba.gdn.output_quant import gdn_output_quant_scale
+    from vllm.model_executor.layers.quantization.utils.quant_utils import (
+        kFp8StaticTensorSym,
+    )
+
+    projection = RowParallelLinear.__new__(RowParallelLinear)
+    torch.nn.Module.__init__(projection)
+    projection.input_is_parallel = True
+    projection.weight = torch.empty(16, 16, dtype=torch.float8_e4m3fn, device="cuda")
+    projection.weight_scale = torch.ones((), device="cuda")
+    projection.input_scale = torch.full((), 0.012, device="cuda")
+    kernel = CutlassFP8ScaledMMLinearKernel.__new__(CutlassFP8ScaledMMLinearKernel)
+    kernel.config = FP8ScaledMMLinearLayerConfig(
+        weight_quant_key=kFp8StaticTensorSym,
+        activation_quant_key=kFp8StaticTensorSym,
+        weight_shape=(16, 16),
+        input_dtype=torch.bfloat16,
+        out_dtype=torch.bfloat16,
+    )
+    kernel.layer_param_names = (
+        "weight",
+        "weight_scale",
+        "input_scale",
+        "input_scale_ub",
+    )
+    # Only the layout metadata is used by the selector.
+    kernel.quant_fp8 = types.SimpleNamespace(  # type: ignore[assignment]
+        num_token_padding=None
+    )
+    method = types.SimpleNamespace(
+        **{("kernel" if method_kind == "modelopt" else "fp8_linear"): kernel}
+    )
+    projection.quant_method = method
+    if method_kind == "compressed_tensors":
+        projection.scheme = method
+        projection.quant_method = types.SimpleNamespace()
+    layer = types.SimpleNamespace(
+        _allow_fused_output_quant=True,
+        gdn_decode_kernel="cuda",
+        num_k_heads=2,
+        num_v_heads=16,
+        tp_size=1,
+        head_k_dim=128,
+        head_v_dim=128,
+        norm=types.SimpleNamespace(
+            weight=torch.ones(128, device="cuda", dtype=torch.bfloat16),
+            activation="silu",
+        ),
+        dt_bias=torch.ones(16, dtype=torch.bfloat16, device="cuda"),
+        layer_norm_epsilon=1e-6,
+        out_proj=projection,
+    )
+    assert gdn_output_quant_scale(layer) is projection.input_scale
+    kernel.quant_fp8.num_token_padding = 17
+    assert gdn_output_quant_scale(layer) is None
+    kernel.quant_fp8.num_token_padding = None
+    projection.input_scale = None
+    assert gdn_output_quant_scale(layer) is None
+    projection.input_scale = torch.ones(2, device="cuda")
+    assert gdn_output_quant_scale(layer) is None
+    projection.input_scale = torch.ones((), device="cuda")
+    projection.weight = projection.weight.bfloat16()
+    assert gdn_output_quant_scale(layer) is None
+    projection.weight = projection.weight.to(torch.float8_e4m3fn)
+    projection.input_is_parallel = False
+    assert gdn_output_quant_scale(layer) is None
+    projection.input_is_parallel = True
+    layer._allow_fused_output_quant = False
+    assert gdn_output_quant_scale(layer) is None
+
+
 @pytest.mark.parametrize(
     "seq_lens,query_lens,draft_tokens,expected_fused_calls",
     [
@@ -252,6 +339,7 @@ def test_fused_forward_uses_packed_entrypoint() -> None:
     ],
 )
 @pytest.mark.parametrize("output_gate_activation", ["silu", "sigmoid"])
+@pytest.mark.parametrize("low_latency_layout", [False, True])
 @torch.inference_mode()
 def test_fused_model_path_matches_reference(
     seq_lens: list[int],
@@ -259,10 +347,14 @@ def test_fused_model_path_matches_reference(
     draft_tokens: list[int],
     expected_fused_calls: int,
     output_gate_activation: str,
+    low_latency_layout: bool,
 ) -> None:
     """Fused MTP and its mixed/prefill/decode fallbacks match the reference."""
     torch.manual_seed(1)
     device = torch.device("cuda")
+    num_k_heads, num_v_heads = (2, 16) if low_latency_layout else (H, HV)
+    conv_dim = 2 * num_k_heads * K + num_v_heads * V
+    state_dtype = torch.bfloat16 if low_latency_layout else torch.float32
     vllm_config = _make_vllm_config()
     builder = GDNAttentionMetadataBuilder(
         kv_cache_spec=MambaSpec(
@@ -301,29 +393,29 @@ def test_fused_model_path_matches_reference(
     pool_size = max(int(indices.max().item()) for indices in state_indices) + 1
     conv_state_shape, temporal_state_shape = (
         MambaStateShapeCalculator.gated_delta_net_state_shape(
-            1, H, HV, K, V, CONV_KERNEL, NUM_SPEC
+            1, num_k_heads, num_v_heads, K, V, CONV_KERNEL, NUM_SPEC
         )
     )
     conv_state_seed = 0.05 * torch.randn(
         pool_size, *conv_state_shape, dtype=torch.bfloat16, device=device
     )
     ssm_state_seed = 0.01 * torch.randn(
-        pool_size, *temporal_state_shape, dtype=torch.float32, device=device
+        pool_size, *temporal_state_shape, dtype=state_dtype, device=device
     )
-    a_log = 0.1 * torch.randn(HV, dtype=torch.float32, device=device)
-    dt_bias = 0.1 * torch.randn(HV, dtype=torch.float32, device=device)
+    a_log = 0.1 * torch.randn(num_v_heads, dtype=torch.float32, device=device)
+    dt_bias = 0.1 * torch.randn(num_v_heads, dtype=state_dtype, device=device)
     conv_weight = 0.1 * torch.randn(
-        CONV_DIM, 1, CONV_KERNEL, dtype=torch.bfloat16, device=device
+        conv_dim, 1, CONV_KERNEL, dtype=torch.bfloat16, device=device
     )
-    norm_weight = torch.randn(V, dtype=torch.float32, device=device)
+    norm_weight = torch.randn(V, dtype=state_dtype, device=device)
     num_tokens = batch.compute_num_tokens()
     mixed_qkv = 0.1 * torch.randn(
-        num_tokens, CONV_DIM, dtype=torch.bfloat16, device=device
+        num_tokens, conv_dim, dtype=torch.bfloat16, device=device
     )
-    b = 0.1 * torch.randn(num_tokens, HV, dtype=torch.bfloat16, device=device)
+    b = 0.1 * torch.randn(num_tokens, num_v_heads, dtype=torch.bfloat16, device=device)
     a = 0.1 * torch.randn_like(b)
     output_gate = 0.1 * torch.randn(
-        num_tokens, HV, V, dtype=torch.bfloat16, device=device
+        num_tokens, num_v_heads, V, dtype=torch.bfloat16, device=device
     )
     mixed_qkvz = torch.cat((mixed_qkv, output_gate.flatten(1)), dim=-1)
     ba = torch.cat((b, a), dim=-1)
@@ -338,6 +430,8 @@ def test_fused_model_path_matches_reference(
         conv_weight,
         norm_weight,
         output_gate_activation,
+        num_k_heads,
+        num_v_heads,
     )
     reference_out = torch.zeros_like(output_gate)
     with patch.object(
@@ -360,6 +454,8 @@ def test_fused_model_path_matches_reference(
         conv_weight,
         norm_weight,
         output_gate_activation,
+        num_k_heads,
+        num_v_heads,
     )
     context.no_compile_layers = {PREFIX: fused_layer}
     fused_out = torch.zeros_like(output_gate)

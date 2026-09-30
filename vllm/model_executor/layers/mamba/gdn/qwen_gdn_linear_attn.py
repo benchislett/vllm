@@ -23,6 +23,7 @@ from vllm.distributed import (
 from vllm.forward_context import ForwardContext, get_forward_context
 from vllm.logger import init_logger
 from vllm.model_executor.custom_op import CustomOp, PluggableLayer
+from vllm.model_executor.layers.fusion.quant_activation import QuantizedActivation
 from vllm.model_executor.layers.layernorm import RMSNormGated
 from vllm.model_executor.layers.linear import (
     ColumnParallelLinear,
@@ -30,6 +31,10 @@ from vllm.model_executor.layers.linear import (
     RowParallelLinear,
 )
 from vllm.model_executor.layers.mamba.gdn.base import GatedDeltaNetAttention
+from vllm.model_executor.layers.mamba.gdn.output_quant import (
+    forward_gdn_with_output_quant,
+    gdn_output_quant_scale,
+)
 from vllm.model_executor.layers.mamba.mamba_mixer2 import mamba_v2_sharded_weight_loader
 from vllm.model_executor.layers.mamba.mamba_utils import (
     MambaStateShapeCalculator,
@@ -39,10 +44,16 @@ from vllm.model_executor.layers.mamba.ops.causal_conv1d import (
     causal_conv1d_fn,
     causal_conv1d_update,
 )
+from vllm.model_executor.layers.mamba.ops.causal_conv1d_mtp import (
+    try_causal_conv1d_update_mtp,
+)
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.quantization.auto_awq import AutoAWQConfig
 from vllm.model_executor.layers.quantization.auto_gptq import AutoGPTQConfig
 from vllm.model_executor.layers.quantization.inc import INCConfig
+from vllm.model_executor.layers.quantization.utils.quant_utils import (
+    kFp8StaticTensorSym,
+)
 from vllm.model_executor.model_loader.weight_utils import (
     sharded_weight_loader,
 )
@@ -530,6 +541,12 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             self.gdn_decode_kernel = "XPU"
 
         self.enable_fused_gdn_decode = self.gdn_decode_kernel == "cuda"
+        self._allow_fused_output_quant = (
+            current_platform.is_cuda()
+            and current_platform.is_device_capability((10, 7))
+            and vllm_config.lora_config is None
+            and not envs.VLLM_BATCH_INVARIANT
+        )
         logger.info_once("GDN decode kernel: %s", self.gdn_decode_kernel)
 
         compilation_config = get_current_vllm_config().compilation_config
@@ -914,9 +931,10 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             and self.norm.weight.dtype in (torch.bfloat16, torch.float32)
         )
         if use_fused_gdn_decode:
+            output_scale = gdn_output_quant_scale(self)
             core_attn_out = torch.zeros(
                 (num_tokens, self.num_v_heads // self.tp_size, self.head_v_dim),
-                dtype=hidden_states.dtype,
+                dtype=(torch.bfloat16 if output_scale is None else torch.float8_e4m3fn),
                 device=hidden_states.device,
             )
             torch.ops.vllm.qwen_gdn_attention_core_fused_norm_packed(
@@ -924,8 +942,19 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
                 ba,
                 core_attn_out,
                 layer_name=_encode_layer_name(self.prefix),
+                output_scale=output_scale,
             )
-            output, _ = self.out_proj(core_attn_out.flatten(-2))
+            flat_output = core_attn_out.flatten(-2)
+            projection_input: torch.Tensor | QuantizedActivation = flat_output
+            if output_scale is not None:
+                projection_input = QuantizedActivation(
+                    data=flat_output,
+                    scale=output_scale,
+                    orig_dtype=hidden_states.dtype,
+                    orig_shape=flat_output.shape,
+                    quant_key=kFp8StaticTensorSym,
+                )
+            output, _ = self.out_proj(projection_input)
             return output
 
         if self.gqa_interleaved_layout:
@@ -1689,6 +1718,7 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         output_gate: torch.Tensor,
         core_attn_out: torch.Tensor,
         attn_metadata: GDNAttentionMetadata,
+        output_scale: torch.Tensor | None = None,
     ) -> None:
         state_indices = attn_metadata.spec_state_indices_tensor
         cu_seqlens = attn_metadata.spec_query_start_loc
@@ -1707,18 +1737,34 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         conv_weights = self.conv1d.weight.view(
             self.conv1d.weight.size(0), self.conv1d.weight.size(2)
         )
-        mixed_qkv = causal_conv1d_update(
-            mixed_qkv[:num_actual_tokens],
+        # This method runs inside the opaque GDN custom op, so the selector
+        # sees runtime/capture metadata rather than the initial tracing shape.
+        mixed_qkv = mixed_qkv[:num_actual_tokens]
+        use_pdl = try_causal_conv1d_update_mtp(
+            mixed_qkv,
             conv_state,
             conv_weights,
             self.conv1d.bias,
             self.activation,
-            conv_state_indices=state_indices[:num_requests, 0],
-            num_accepted_tokens=num_accepted_tokens[:num_requests],
-            query_start_loc=cu_seqlens[: num_requests + 1],
-            max_query_len=state_indices.size(1),
-            validate_data=False,
+            state_indices[:num_requests, 0],
+            num_accepted_tokens[:num_requests],
+            cu_seqlens[: num_requests + 1],
+            state_indices.size(1),
+            attn_metadata.num_spec_decode_tokens,
         )
+        if not use_pdl:
+            mixed_qkv = causal_conv1d_update(
+                mixed_qkv,
+                conv_state,
+                conv_weights,
+                self.conv1d.bias,
+                self.activation,
+                conv_state_indices=state_indices[:num_requests, 0],
+                num_accepted_tokens=num_accepted_tokens[:num_requests],
+                query_start_loc=cu_seqlens[: num_requests + 1],
+                max_query_len=state_indices.size(1),
+                validate_data=False,
+            )
         self._forward_core_decode_spec_post_conv_fused_norm(
             mixed_qkv=mixed_qkv,
             b=b[:num_actual_tokens],
@@ -1726,6 +1772,8 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             output_gate=output_gate[:num_actual_tokens],
             core_attn_out=core_attn_out[:num_actual_tokens],
             attn_metadata=attn_metadata,
+            enable_pdl=use_pdl,
+            output_scale=output_scale,
         )
 
     def _forward_core_decode_spec_post_conv_fused_norm(
@@ -1736,6 +1784,8 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         output_gate: torch.Tensor,
         core_attn_out: torch.Tensor,
         attn_metadata: GDNAttentionMetadata,
+        enable_pdl: bool = False,
+        output_scale: torch.Tensor | None = None,
     ) -> None:
         state_indices = attn_metadata.spec_state_indices_tensor
         cu_seqlens = attn_metadata.spec_query_start_loc
@@ -1761,6 +1811,8 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
             scale=self.head_k_dim**-0.5,
             norm_eps=self.layer_norm_epsilon,
             output_gate_activation=self.norm.activation,
+            enable_pdl=enable_pdl,
+            output_scale=output_scale,
         )
 
     def _forward_core_fused_norm_packed(
@@ -1768,7 +1820,13 @@ class QwenGatedDeltaNetAttention(GatedDeltaNetAttention):
         mixed_qkvz: torch.Tensor,
         ba: torch.Tensor,
         core_attn_out: torch.Tensor,
+        output_scale: torch.Tensor | None = None,
     ) -> None:
+        if output_scale is not None:
+            forward_gdn_with_output_quant(
+                self, mixed_qkvz, ba, core_attn_out, output_scale
+            )
+            return
         forward_context = get_forward_context()
         attn_metadata_raw = forward_context.attn_metadata
         qkv_size = (self.key_dim * 2 + self.value_dim) // self.tp_size
@@ -1945,6 +2003,7 @@ def qwen_gdn_attention_core_fused_norm_packed(
     ba: torch.Tensor,
     core_attn_out: torch.Tensor,
     layer_name: LayerNameType,
+    output_scale: torch.Tensor | None = None,
 ) -> None:
     layer_name = _resolve_layer_name(layer_name)
     forward_context: ForwardContext = get_forward_context()
@@ -1953,6 +2012,7 @@ def qwen_gdn_attention_core_fused_norm_packed(
         mixed_qkvz=mixed_qkvz,
         ba=ba,
         core_attn_out=core_attn_out,
+        output_scale=output_scale,
     )
 
 
