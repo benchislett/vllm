@@ -1120,6 +1120,20 @@ if(VLLM_GPU_LANG STREQUAL "CUDA" OR VLLM_GPU_LANG STREQUAL "HIP")
     message(STATUS
       "Building fused KDA decode for archs: ${FUSED_KDA_DECODE_ARCHS}")
   endif()
+  if(${CMAKE_CUDA_COMPILER_VERSION} VERSION_GREATER_EQUAL 13.0)
+    cuda_archs_loose_intersection(QWEN_PAIRED_GEMM_ARCHS "10.7a" "${CUDA_ARCHS}")
+  endif()
+  if(QWEN_PAIRED_GEMM_ARCHS)
+    set(QWEN_PAIRED_GEMM_SRC "csrc/libtorch_stable/gdn/paired_gemm/bindings.cu")
+    set_gencode_flags_for_srcs(
+      SRCS "${QWEN_PAIRED_GEMM_SRC}"
+      CUDA_ARCHS "${QWEN_PAIRED_GEMM_ARCHS}")
+    set_property(SOURCE ${QWEN_PAIRED_GEMM_SRC} APPEND PROPERTY
+      COMPILE_OPTIONS "$<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>")
+    list(APPEND VLLM_STABLE_EXT_SRC "${QWEN_PAIRED_GEMM_SRC}")
+    message(STATUS "Building reference Qwen paired GEMM for: ${QWEN_PAIRED_GEMM_ARCHS}")
+  endif()
+
   if(FUSED_GDN_DECODE_ARCHS)
     set(FUSED_GDN_DECODE_SRC
       "csrc/libtorch_stable/gdn/fused_gdn_decode_kernel.cu")
