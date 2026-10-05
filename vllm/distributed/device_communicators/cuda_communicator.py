@@ -76,7 +76,16 @@ class CudaCommunicator(DeviceCommunicatorBase):
                 and bool(rocm_aiter_ops.is_custom_all_reduce_enabled())
             )
 
+        from vllm.config import get_current_vllm_config_or_none
+
+        config = get_current_vllm_config_or_none()
         self.use_custom_allreduce = use_custom_allreduce
+        self.use_custom_ag_rs = (
+            (config is None or config.kernel_config.enable_custom_ag_rs)
+            and use_custom_allreduce
+            and current_platform.is_cuda()
+            and not envs.VLLM_BATCH_INVARIANT
+        )
         self.use_torch_symm_mem = use_torch_symm_mem
         self.use_flashinfer_allreduce = use_flashinfer_allreduce
         self.use_flashinfer_pcie_ipc_allreduce = use_flashinfer_pcie_ipc_allreduce
@@ -440,12 +449,12 @@ class CudaCommunicator(DeviceCommunicatorBase):
         return ca_comm.custom_reduce_scatter(input_.contiguous())
 
     def all_gather(self, input_: torch.Tensor, dim: int = -1) -> torch.Tensor:
-        # Route uniform dim-0 all-gathers through NVLS symmetric memory when
-        # enabled (mirrors reduce_scatter); otherwise fall back to the
-        # PyNccl/base-class all-gather. Sequence parallelism's
-        # gather-before-GEMM uses dim=0 with tp-aligned (uniform) shards.
         if dim < 0:
             dim += input_.dim()
+        if dim == 0 and self.use_custom_ag_rs:
+            output = self.custom_all_gather(input_)
+            if output is not None:
+                return output
         if dim == 0 and should_nccl_symm_mem_ag_rs():
             return self._all_gather_symm_mem(input_.contiguous())
 
@@ -478,7 +487,6 @@ class CudaCommunicator(DeviceCommunicatorBase):
     def reduce_scatter(self, input_: torch.Tensor, dim: int = -1):
         world_size = self.world_size
         pynccl_comm = self.pynccl_comm
-        assert pynccl_comm is not None
         if dim < 0:
             # Convert negative dim to positive.
             dim += input_.dim()
@@ -488,6 +496,11 @@ class CudaCommunicator(DeviceCommunicatorBase):
         input_tensor = input_.movedim(0, dim).contiguous()
 
         assert input_tensor.shape[0] % world_size == 0
+        if dim == 0 and self.use_custom_ag_rs:
+            output = self.custom_reduce_scatter(input_tensor)
+            if output is not None:
+                return output
+        assert pynccl_comm is not None
         chunk_size = input_tensor.shape[0] // world_size
         output_shape = (chunk_size,) + input_tensor.shape[1:]
 
