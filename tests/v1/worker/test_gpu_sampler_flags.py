@@ -224,7 +224,7 @@ def test_sampling_graph_verification_accepts_and_rejects(
     verifier = RejectionSampler(
         sampler, SpeculativeConfig(method="ngram", num_speculative_tokens=3), device
     )
-    weight = torch.full((VOCAB_SIZE, 1), -100, device=device)
+    weight = torch.full((VOCAB_SIZE, 1), -100.0, device=device)
     weight[7] = 100
 
     def compute_logits(hidden):
