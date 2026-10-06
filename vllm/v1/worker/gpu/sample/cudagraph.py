@@ -20,7 +20,11 @@ from vllm.platforms import current_platform
 from vllm.triton_utils import tl, triton
 from vllm.v1.sample.ops.topk_topp_sampler import apply_top_k_top_p
 from vllm.v1.sample.ops.topk_topp_triton import get_buffer_cache_tensors
-from vllm.v1.worker.gpu.input_batch import InputBatch, get_num_sampled_and_rejected
+from vllm.v1.worker.gpu.input_batch import (
+    InputBatch,
+    InputBuffers,
+    get_num_sampled_and_rejected,
+)
 from vllm.v1.worker.gpu.sample.bad_words import BadWordsState
 from vllm.v1.worker.gpu.sample.logit_bias import LogitBiasState
 from vllm.v1.worker.gpu.sample.output import SamplerOutput
@@ -139,7 +143,7 @@ class SamplingGraphInputs:
                 (max_num_logits, hidden_size), dtype=dtype, device=device
             ),
             positions=zeros(max_num_logits, torch.int64),
-            draft_tokens=zeros(max_num_logits, torch.int64),
+            draft_tokens=zeros(max_num_logits, torch.int32),
             expanded_idx_mapping=zeros(max_num_logits, torch.int32),
             expanded_local_pos=zeros(max_num_logits, torch.int32),
             idx_mapping=zeros(max_num_reqs, torch.int32),
@@ -345,6 +349,12 @@ class SamplingCudaGraphManager:
             reverse=True,
         )
         pool = current_platform.get_global_graph_pool()
+        warmup_buffers = InputBuffers(
+            self.inputs.idx_mapping.numel(),
+            self.inputs.positions.numel(),
+            self.device,
+        )
+        warmed_shapes: set[tuple[int, int]] = set()
         with graph_capture(device=self.device) as context:
             for key in keys:
                 b = key.num_reqs
@@ -361,6 +371,21 @@ class SamplingCudaGraphManager:
                 inputs.expanded_local_pos.copy_(
                     torch.arange(width, device=self.device).repeat(b)
                 )
+                if (b, rows) not in warmed_shapes:
+                    batch = InputBatch.make_dummy(b, rows, warmup_buffers)
+                    batch.logits_indices = torch.arange(
+                        rows, dtype=torch.int64, device=self.device
+                    )
+                    batch.expanded_idx_mapping = inputs.expanded_idx_mapping
+                    batch.expanded_local_pos = inputs.expanded_local_pos
+                    batch.cu_num_logits = inputs.cu_num_logits
+                    inputs.stage(
+                        inputs.hidden_states,
+                        batch,
+                        self.sampler.sampling_states,
+                        self.sampler.req_states.prefill_len.gpu,
+                    )
+                    warmed_shapes.add((b, rows))
                 inputs.temperature.fill_(1)
                 inputs.top_k.fill_(min(20, self.sampler.sampling_states.vocab_size))
                 inputs.top_p.fill_(0.95)

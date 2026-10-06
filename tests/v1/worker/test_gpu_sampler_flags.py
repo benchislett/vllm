@@ -166,6 +166,7 @@ def test_sampling_graph_preserves_request_reuse_rng_and_outputs(
     retained: list[tuple[SamplerOutput, torch.Tensor]] = []
     for iteration, slots in enumerate(([3, 1], [1, 3], [2, 3], [3, 0])):
         batch = InputBatch.make_dummy(2, 4, input_buffers, is_padding=False)
+        batch.logits_indices = batch.logits_indices.to(torch.int64)
         batch.idx_mapping_np = np.array(slots, dtype=np.int32)
         batch.idx_mapping = torch.tensor(slots, dtype=torch.int32, device=device)
         batch.expanded_idx_mapping = batch.idx_mapping
