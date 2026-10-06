@@ -142,6 +142,7 @@ from vllm.v1.worker.gpu.sample.batch_shard import (
     all_to_all_logits,
     gather_sampler_output,
 )
+from vllm.v1.worker.gpu.sample.cudagraph import SamplingCudaGraphManager
 from vllm.v1.worker.gpu.sample.logits_processor import build_custom_logits_processors
 from vllm.v1.worker.gpu.sample.output import SamplerOutput
 from vllm.v1.worker.gpu.sample.prompt_logprob import PromptLogprobsWorker
@@ -327,6 +328,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         self.prompt_logprobs_worker: PromptLogprobsWorker | None = None
         self.structured_outputs_worker: StructuredOutputsWorker | None = None
         self.cudagraph_manager: ModelCudaGraphManager | None = None
+        self.sampling_cudagraph_manager: SamplingCudaGraphManager | None = None
 
         # LoRA-related workers.
         self.lora_state = LoraState(max_num_reqs=self.max_num_reqs)
@@ -1088,6 +1090,29 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                                 self._dummy_run(**batch)
                         self.adaptive_verification.set_initial_cost_curves(timings)
                     self.kv_connector.reset_capture_state()
+                    if (
+                        self.compilation_config.cudagraph_sampling
+                        and self.sampling_cudagraph_manager is None
+                        and type(self.sampler) is Sampler
+                        and current_platform.is_cuda()
+                        and self.batch_sharder is None
+                        and self.lora_config is None
+                        and self.ubatch_runner is None
+                        and self.pcp_manager is None
+                        and self.is_last_pp_rank
+                    ):
+                        self.sampling_cudagraph_manager = SamplingCudaGraphManager(
+                            self.vllm_config,
+                            self.sampler,
+                            self.rejection_sampler,
+                            self.model.compute_logits,
+                            self.speculator.draft_logits if self.speculator else None,
+                            self.compilation_config.cudagraph_capture_sizes or [],
+                            self.model_config.get_hidden_size(),
+                            self.model_config.dtype,
+                            self.device,
+                        )
+                        self.sampling_cudagraph_manager.capture()
 
             end_free_gpu_memory = torch.accelerator.get_memory_info()[0]
 
@@ -1575,6 +1600,14 @@ class GPUModelRunner(LoRAModelRunnerMixin):
         input_batch: InputBatch,
         grammar_output: GrammarOutput | None,
     ) -> tuple[SamplerOutput, torch.Tensor, torch.Tensor]:
+        if self.sampling_cudagraph_manager is not None and grammar_output is None:
+            output = self.sampling_cudagraph_manager.run(
+                hidden_states,
+                input_batch,
+                self.speculator.draft_logits if self.speculator else None,
+            )
+            if output is not None:
+                return output, output.num_sampled, output.num_rejected
         shard_metadata = None
         global_input_batch = input_batch
         if self.batch_sharder is not None:
@@ -2328,6 +2361,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.aux_output_connector.close()
         set_offloader(None)
         self.cudagraph_manager = None
+        self.sampling_cudagraph_manager = None
         self.fast_prefill = None
         self.pooling_runner = None
         if hasattr(self, "kv_caches"):

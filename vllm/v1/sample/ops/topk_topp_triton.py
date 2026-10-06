@@ -1717,6 +1717,19 @@ def apply_top_k_top_p_triton(
     return logits
 
 
+def get_buffer_cache_tensors() -> tuple[torch.Tensor, ...]:
+    """Retain workspaces referenced by a captured filter across cache resets."""
+    return (
+        *tuple(_TRITON_BUFFER_CACHE.values()),
+        *(tensor for tables in _TRITON_TABLE_CACHE.values() for tensor in tables),
+        *(
+            tensor
+            for workspace in _TRITON_SPLIT_CACHE.values()
+            for tensor in workspace.values()
+        ),
+    )
+
+
 def reset_buffer_cache():
     _TRITON_BUFFER_CACHE.clear()
     _TRITON_TABLE_CACHE.clear()

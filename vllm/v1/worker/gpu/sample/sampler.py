@@ -334,11 +334,39 @@ class Sampler:
         top_p: torch.Tensor | None,
         use_fused_sampler: bool,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.sample_from_processed_logits(
+            processed_logits,
+            expanded_idx_mapping,
+            pos,
+            top_k,
+            top_p,
+            use_fused_sampler,
+            self.sampling_states.temperature.gpu,
+            self.sampling_states.seeds.gpu,
+        )
+
+    def sample_from_processed_logits(
+        self,
+        processed_logits: torch.Tensor,
+        expanded_idx_mapping: torch.Tensor,
+        pos: torch.Tensor,
+        top_k: torch.Tensor | None,
+        top_p: torch.Tensor | None,
+        use_fused_sampler: bool,
+        temperature: torch.Tensor,
+        seeds: torch.Tensor,
+        flashinfer_rng: tuple[torch.Tensor, torch.Tensor] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """GPU sampling shared by eager execution and CUDA graph capture."""
         if use_fused_sampler:
             if self.use_flashinfer:
-                sampled = flashinfer_sample(processed_logits, top_k, top_p).to(
-                    torch.int64
-                )
+                sampled = flashinfer_sample(
+                    processed_logits,
+                    top_k,
+                    top_p,
+                    seed=flashinfer_rng[0] if flashinfer_rng is not None else None,
+                    offset=flashinfer_rng[1] if flashinfer_rng is not None else None,
+                ).to(torch.int64)
             else:  # Use XPU sampler
                 sampled, _ = xpu_sample(processed_logits, top_k, top_p)
         else:
@@ -346,8 +374,8 @@ class Sampler:
             sampled = gumbel_sample(
                 processed_logits,
                 expanded_idx_mapping,
-                self.sampling_states.temperature.gpu,
-                self.sampling_states.seeds.gpu,
+                temperature,
+                seeds,
                 pos,
                 apply_temperature=False,
                 is_drafting=False,

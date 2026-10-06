@@ -119,3 +119,88 @@ def test_logits_processing_cache_only_checks_active_requests():
 
     assert not np.any(sampler.needs_logits_processing[sampling_only])
     assert np.any(sampler.needs_logits_processing[with_processing])
+
+
+@pytest.mark.parametrize(
+    "sampling_params",
+    [
+        SamplingParams(temperature=0, seed=137),
+        SamplingParams(temperature=1, seed=137),
+        SamplingParams(temperature=1, seed=137, top_k=20, top_p=0.95),
+        SamplingParams(temperature=1, top_k=20, top_p=0.95),
+    ],
+    ids=["greedy", "seeded", "seeded-filtered", "unseeded-filtered"],
+)
+@pytest.mark.skipif(torch.version.hip is not None, reason="CUDA sampling graphs")
+def test_sampling_graph_preserves_request_reuse_rng_and_outputs(
+    sampling_params, default_vllm_config, dist_init
+):
+    """Replay must refresh request state and leave earlier async outputs intact."""
+    from vllm.v1.sample.ops.topk_topp_triton import reset_buffer_cache
+    from vllm.v1.worker.gpu.input_batch import InputBatch, InputBuffers
+    from vllm.v1.worker.gpu.sample.cudagraph import SamplingCudaGraphManager
+    from vllm.v1.worker.gpu.sample.output import SamplerOutput
+
+    device = torch.device("cuda:0")
+    sampler = _make_sampler()
+    hidden_size = 32
+    weight = (torch.arange(VOCAB_SIZE * hidden_size, device=device) % 11) - 5
+    weight = weight.reshape(VOCAB_SIZE, hidden_size).to(torch.bfloat16)
+
+    def compute_logits(hidden):
+        return torch.nn.functional.linear(hidden, weight) / 32
+
+    manager = SamplingCudaGraphManager(
+        default_vllm_config,
+        sampler,
+        None,
+        compute_logits,
+        None,
+        [2],
+        hidden_size,
+        torch.bfloat16,
+        device,
+    )
+    manager.capture()
+    input_buffers = InputBuffers(4, 16, device)
+    retained: list[tuple[SamplerOutput, torch.Tensor]] = []
+    for iteration, slots in enumerate(([3, 1], [1, 3], [2, 3], [3, 0])):
+        batch = InputBatch.make_dummy(2, 4, input_buffers, is_padding=False)
+        batch.idx_mapping_np = np.array(slots, dtype=np.int32)
+        batch.idx_mapping = torch.tensor(slots, dtype=torch.int32, device=device)
+        batch.expanded_idx_mapping = batch.idx_mapping
+        batch.positions.copy_(torch.arange(4, device=device) + iteration * 8)
+        for slot in slots:
+            params = sampling_params.clone()
+            if params.seed is not None:
+                params.seed += iteration
+            if params.top_k > 0:
+                params.top_k = 7 if iteration % 2 else 64
+                params.top_p = 0.6 if iteration % 2 else 0.95
+            sampler.add_request(slot, params)
+            sampler.req_states.prefill_len.np[slot] = 100 if iteration == 2 else 0
+        sampler.apply_staged_writes()
+        sampler.req_states.prefill_len.copy_to_uva()
+        hidden = torch.randint(-4, 5, (4, hidden_size), device=device).to(
+            torch.bfloat16
+        )
+        rng_before = torch.cuda.get_rng_state(device)
+        reference = sampler(compute_logits(hidden[batch.logits_indices]), batch)
+        rng_after = torch.cuda.get_rng_state(device)
+        torch.cuda.set_rng_state(rng_before, device)
+        output = manager.run(hidden, batch, None)
+        assert output is not None, "The test must exercise graph replay"
+        assert torch.equal(torch.cuda.get_rng_state(device), rng_after)
+        for name in ("sampled_token_ids", "num_sampled", "num_rejected"):
+            assert torch.equal(getattr(output, name), getattr(reference, name))
+        for old_output, expected in retained:
+            assert torch.equal(old_output.sampled_token_ids, expected)
+        retained.append((output, output.sampled_token_ids.clone()))
+        if iteration == 1:
+            # Captured native filters must own scratch tensors even if eager
+            # execution replaces the global cache between replays.
+            reset_buffer_cache()
+
+    sampler.add_request(slots[0], SamplingParams(logit_bias={1: 5.0}))
+    sampler.apply_staged_writes()
+    assert manager.run(hidden, batch, None) is None
