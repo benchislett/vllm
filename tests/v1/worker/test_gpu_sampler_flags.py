@@ -265,6 +265,9 @@ def test_sampling_graph_verification_accepts_and_rejects(
         batch.input_ids.fill_(7)
         if reject:
             batch.input_ids[2] = 8
+            if draft_logits is not None:
+                draft_logits[slots[0], 1, 7] = -100
+                draft_logits[slots[0], 1, 8] = 100
         for slot in slots:
             sampler.add_request(slot, SamplingParams(temperature=temperature, seed=137))
             sampler.req_states.prefill_len.np[slot] = 0
