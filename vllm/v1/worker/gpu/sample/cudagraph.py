@@ -271,6 +271,7 @@ class SamplingCudaGraphManager:
         self.rng_seed = torch.zeros(1, dtype=torch.int64, device=device)
         self.rng_offset = torch.zeros_like(self.rng_seed)
         self.graphs: dict[SamplingGraphKey, torch.cuda.CUDAGraph] = {}
+        self.captured_shapes: set[tuple[int, bool]] = set()
         self.outputs: dict[
             SamplingGraphKey, tuple[torch.Tensor, torch.Tensor, torch.Tensor]
         ] = {}
@@ -408,6 +409,7 @@ class SamplingCudaGraphManager:
                     output = self._sample(key, inputs)
                     get_offloader().join_after_forward()
                 self.graphs[key] = graph
+                self.captured_shapes.add((key.num_reqs, key.speculative))
                 self.outputs[key] = output
                 self.input_views[key] = inputs
                 # Native eager filtering may grow or reset its global caches.
@@ -423,6 +425,13 @@ class SamplingCudaGraphManager:
         batch: InputBatch,
         draft_logits: torch.Tensor | None,
     ) -> SamplerOutput | None:
+        speculative = batch.num_draft_tokens > 0
+        width = self.num_speculative_tokens + 1 if speculative else 1
+        if (
+            (batch.num_reqs, speculative) not in self.captured_shapes
+            or batch.logits_indices.numel() != batch.num_reqs * width
+        ):
+            return None
         sampler = self.sampler
         ids, states = batch.idx_mapping_np, sampler.sampling_states
         if (
@@ -452,13 +461,9 @@ class SamplingCudaGraphManager:
             or (thinking.enabled and np.any(thinking.use_thinking_budget[ids]))
         ):
             return None
-        speculative = batch.num_draft_tokens > 0
         if speculative and draft_logits is not self.draft_logits:
             return None
         if speculative and not self.speculative_supported:
-            return None
-        width = self.num_speculative_tokens + 1 if speculative else 1
-        if batch.logits_indices.numel() != batch.num_reqs * width:
             return None
         top_k = bool(np.any(states.top_k.np[ids] != states.vocab_size))
         top_p = bool(np.any(states.top_p.np[ids] != 1))
