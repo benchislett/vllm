@@ -205,3 +205,79 @@ def test_sampling_graph_preserves_request_reuse_rng_and_outputs(
     sampler.add_request(slots[0], SamplingParams(logit_bias={1: 5.0}))
     sampler.apply_staged_writes()
     assert manager.run(hidden, batch, None) is None
+
+
+@pytest.mark.parametrize("probabilistic", [False, True])
+@pytest.mark.parametrize("temperature", [0, 1])
+@pytest.mark.skipif(torch.version.hip is not None, reason="CUDA sampling graphs")
+def test_sampling_graph_verification_accepts_and_rejects(
+    probabilistic, temperature, default_vllm_config, dist_init
+):
+    """Changing draft tokens must change accepted lengths on actual replay."""
+    from vllm.config import SpeculativeConfig
+    from vllm.v1.worker.gpu.input_batch import InputBatch, InputBuffers
+    from vllm.v1.worker.gpu.sample.cudagraph import SamplingCudaGraphManager
+    from vllm.v1.worker.gpu.spec_decode.rejection_sampler import RejectionSampler
+
+    sampler = _make_sampler()
+    device = torch.device("cuda:0")
+    verifier = RejectionSampler(
+        sampler, SpeculativeConfig(method="ngram", num_speculative_tokens=3), device
+    )
+    weight = torch.full((VOCAB_SIZE, 1), -100, device=device)
+    weight[7] = 100
+
+    def compute_logits(hidden):
+        return torch.nn.functional.linear(hidden, weight)
+
+    draft_logits = weight.view(1, 1, -1).expand(4, 3, -1).contiguous()
+    if not probabilistic:
+        draft_logits = None
+    manager = SamplingCudaGraphManager(
+        default_vllm_config,
+        sampler,
+        verifier,
+        compute_logits,
+        draft_logits,
+        [2],
+        1,
+        torch.float32,
+        device,
+    )
+    manager.capture()
+    buffers = InputBuffers(4, 8, device)
+    hidden = torch.ones(8, 1, device=device)
+    for reject in (False, True):
+        batch = InputBatch.make_dummy(2, 8, buffers, is_padding=False)
+        slots = [3, 1] if reject else [1, 3]
+        batch.idx_mapping_np = np.array(slots, dtype=np.int32)
+        batch.idx_mapping = torch.tensor(slots, dtype=torch.int32, device=device)
+        batch.logits_indices = torch.arange(8, dtype=torch.int64, device=device)
+        batch.expanded_idx_mapping = batch.idx_mapping.repeat_interleave(4)
+        batch.expanded_local_pos = torch.arange(
+            4, dtype=torch.int32, device=device
+        ).repeat(2)
+        batch.cu_num_logits = batch.query_start_loc
+        batch.cu_num_logits_np = batch.query_start_loc_np
+        batch.num_draft_tokens = 6
+        batch.num_draft_tokens_per_req = np.full(2, 3, dtype=np.int32)
+        batch.positions.copy_(torch.arange(8, device=device) + 10)
+        batch.input_ids.fill_(7)
+        if reject:
+            batch.input_ids[2] = 8
+        for slot in slots:
+            sampler.add_request(slot, SamplingParams(temperature=temperature, seed=137))
+            sampler.req_states.prefill_len.np[slot] = 0
+        sampler.apply_staged_writes()
+        sampler.req_states.prefill_len.copy_to_uva()
+        reference = verifier(compute_logits(hidden), batch, draft_logits)
+        output = manager.run(hidden, batch, draft_logits)
+        assert output is not None, "The test must exercise verification replay"
+        assert reference.num_sampled.tolist() == ([2, 4] if reject else [4, 4])
+        for name in ("num_sampled", "num_rejected"):
+            assert torch.equal(getattr(output, name), getattr(reference, name))
+        for i, count in enumerate(reference.num_sampled.tolist()):
+            assert torch.equal(
+                output.sampled_token_ids[i, :count],
+                reference.sampled_token_ids[i, :count],
+            )
