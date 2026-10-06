@@ -442,31 +442,34 @@ class SamplingCudaGraphManager:
             or sampler.return_sampling_mask
             or sampler.trace_replay_state is not None
             or sampler.get_logprobs_dims(ids) is not None
-            or np.any(
-                (states.temperature.np[ids] != 0) & (states.temperature.np[ids] != 1)
-            )
-            or np.any(states.min_p.np[ids] != 0)
             or tuple(type(p) for p in sampler.logits_processors)
             != (LogitBiasState, PenaltiesState, BadWordsState)
         ):
             return None
-        bias = cast(LogitBiasState, sampler.logits_processors[0])
-        penalties = cast(PenaltiesState, sampler.logits_processors[1])
-        bad_words = cast(BadWordsState, sampler.logits_processors[2])
-        thinking = sampler.thinking_budget_state
-        if (
-            np.any(bias.use_logit_bias[ids])
-            or np.any(penalties.use_penalty[ids])
-            or np.any(bad_words.num_bad_words.np[ids])
-            or (thinking.enabled and np.any(thinking.use_thinking_budget[ids]))
-        ):
-            return None
+        top_k = top_p = False
+        if np.any(sampler.needs_logits_processing[ids]):
+            bias = cast(LogitBiasState, sampler.logits_processors[0])
+            penalties = cast(PenaltiesState, sampler.logits_processors[1])
+            bad_words = cast(BadWordsState, sampler.logits_processors[2])
+            thinking = sampler.thinking_budget_state
+            if (
+                np.any(
+                    (states.temperature.np[ids] != 0)
+                    & (states.temperature.np[ids] != 1)
+                )
+                or np.any(states.min_p.np[ids] != 0)
+                or np.any(bias.use_logit_bias[ids])
+                or np.any(penalties.use_penalty[ids])
+                or np.any(bad_words.num_bad_words.np[ids])
+                or (thinking.enabled and np.any(thinking.use_thinking_budget[ids]))
+            ):
+                return None
+            top_k = bool(np.any(states.top_k.np[ids] != states.vocab_size))
+            top_p = bool(np.any(states.top_p.np[ids] != 1))
         if speculative and draft_logits is not self.draft_logits:
             return None
         if speculative and not self.speculative_supported:
             return None
-        top_k = bool(np.any(states.top_k.np[ids] != states.vocab_size))
-        top_p = bool(np.any(states.top_p.np[ids] != 1))
         use_flashinfer = (
             not speculative
             and sampler.use_flashinfer
