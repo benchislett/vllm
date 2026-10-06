@@ -251,6 +251,12 @@ class SamplingCudaGraphManager:
         self.num_speculative_tokens = (
             rejection_sampler.num_speculative_steps if rejection_sampler else 0
         )
+        self.speculative_supported = rejection_sampler is not None and not (
+            rejection_sampler.enable_adaptive_verification
+            or rejection_sampler.use_block_verification
+            or rejection_sampler.synthetic_conditional_rates is not None
+            or rejection_sampler.watermark_key is not None
+        )
         self.capture_sizes = sorted(
             {n for n in capture_sizes if 0 < n <= sampler.sampling_states.max_num_reqs},
             reverse=True,
@@ -325,7 +331,9 @@ class SamplingCudaGraphManager:
         keys = []
         for num_reqs in self.capture_sizes:
             for speculative in (
-                (False, True) if self.num_speculative_tokens else (False,)
+                (False, True)
+                if self.num_speculative_tokens and self.speculative_supported
+                else (False,)
             ):
                 width = self.num_speculative_tokens + 1 if speculative else 1
                 if speculative and num_reqs * width > get_max_chunk_logits(
@@ -447,13 +455,7 @@ class SamplingCudaGraphManager:
         speculative = batch.num_draft_tokens > 0
         if speculative and draft_logits is not self.draft_logits:
             return None
-        if speculative and (
-            self.rejection_sampler is None
-            or self.rejection_sampler.enable_adaptive_verification
-            or self.rejection_sampler.use_block_verification
-            or self.rejection_sampler.synthetic_conditional_rates is not None
-            or self.rejection_sampler.watermark_key is not None
-        ):
+        if speculative and not self.speculative_supported:
             return None
         width = self.num_speculative_tokens + 1 if speculative else 1
         if batch.logits_indices.numel() != batch.num_reqs * width:
