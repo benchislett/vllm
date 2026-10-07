@@ -639,6 +639,13 @@ class CompilationConfig:
     Warning: This flag is new and subject to change in addition
     more modes may be added.
     """
+    cudagraph_sampling: bool = False
+    """Capture the LM head and supported target sampling paths in ModelRunnerV2.
+    Unsupported request features continue to use eager sampling. Graphs are
+    captured at startup for the configured capture sizes, interpreted as request
+    counts, and their memory is included in CUDA graph memory profiling.
+    """
+
     cudagraph_num_of_warmups: int = 0
     """Number of warmup runs for cudagraph.
     It means the first several runs will be treated as warmup runs.
@@ -798,6 +805,7 @@ class CompilationConfig:
             "cache_dir",
             "local_cache_dir",
             "traced_files",
+            "cudagraph_sampling",  # Runs after the compiled model forward.
             "compilation_time",
             "encoder_compilation_time",
             "enabled_custom_ops",
