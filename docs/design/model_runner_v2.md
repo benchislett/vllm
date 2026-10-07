@@ -208,10 +208,15 @@ hidden states; a staging kernel selects the needed hidden rows and refreshes
 persistent sampling metadata before replay. Logits are produced inside the
 sampling graph, avoiding a copy of the vocabulary-sized matrix.
 
-Graphs are captured at startup for configured request counts and top-k/top-p
-backend variants. Each speculative request must have the configured fixed
-number of draft tokens. Uncaptured or ragged shapes use eager sampling.
-Temperature 0 and 1 are supported, including mixed batches and seeded requests.
+Graphs are captured at startup for configured request counts, with separate
+unfiltered and filtered variants. The filtered graph handles top-k, top-p, or
+both using per-request parameters and neutral values for disabled filters.
+Arbitrary temperatures are supported, including mixed greedy/random batches
+and seeded requests. Speculative inputs are padded to the configured maximum
+draft count; GPU row boundaries preserve each request's actual draft count.
+Standard, synthetic, block, and adaptive verification use the deployment's
+configured verification kernels. Uncaptured request counts and speculative
+capacities exceeding the verifier's logits chunk limit use eager sampling.
 The FlashInfer path advances its usual generator explicitly before replay.
 Replay outputs are copied to private tensors so subsequent replays cannot
 overwrite results awaiting asynchronous host copies. Captured filter scratch
@@ -219,8 +224,8 @@ storage stays alive even if eager filtering replaces its global caches.
 
 Logprobs, logits processors other than top-k/top-p, structured output,
 thinking budgets, trace replay, and sampling diagnostics use the eager path.
-Adaptive, block, synthetic, and watermarked verification also use eager
-sampling. The manager is disabled for LoRA, batch sharding, microbatching,
+Watermarked verification also uses eager sampling.
+The manager is disabled for LoRA, batch sharding, microbatching,
 and prefill context parallelism. Capture adds startup time and graph-pool
 memory; this feature is disabled by default.
 

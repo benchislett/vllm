@@ -4,7 +4,6 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from itertools import product
 from typing import cast
 
 import numpy as np
@@ -26,6 +25,7 @@ from vllm.v1.worker.gpu.input_batch import (
     get_num_sampled_and_rejected,
 )
 from vllm.v1.worker.gpu.sample.bad_words import BadWordsState
+from vllm.v1.worker.gpu.sample.gumbel import apply_temperature
 from vllm.v1.worker.gpu.sample.logit_bias import LogitBiasState
 from vllm.v1.worker.gpu.sample.output import SamplerOutput
 from vllm.v1.worker.gpu.sample.penalties import PenaltiesState
@@ -69,6 +69,7 @@ def _stage_sampling_inputs(
     out_prefill_len,
     out_top_k,
     out_top_p,
+    num_logits,
     hidden_stride: tl.constexpr,
     hidden_col_stride: tl.constexpr,
     hidden_size: tl.constexpr,
@@ -76,19 +77,20 @@ def _stage_sampling_inputs(
     BLOCK_SIZE: tl.constexpr,
 ):
     row = tl.program_id(0)
-    token_idx = tl.load(logits_indices + row)
-    req_idx = tl.load(expanded_idx_mapping + row)
-    local_pos = tl.load(expanded_local_pos + row)
-    pos = tl.load(positions + token_idx)
-    token = tl.load(input_ids + token_idx)
-    prefill = tl.load(prefill_len + req_idx)
+    valid = row < num_logits
+    token_idx = tl.load(logits_indices + row, valid, other=0)
+    req_idx = tl.load(expanded_idx_mapping + row, valid, other=0)
+    local_pos = tl.load(expanded_local_pos + row, valid, other=0)
+    pos = tl.load(positions + token_idx, valid, other=0)
+    token = tl.load(input_ids + token_idx, valid, other=-1)
+    prefill = tl.load(prefill_len + req_idx, valid, other=0)
     # Draft slots before prefill completion are placeholders, as in
     # gather_draft_sampled(). They must reject even when the token matches.
     token = tl.where((local_pos > 0) & (pos - local_pos < prefill), -1, token)
     offsets = tl.arange(0, BLOCK_SIZE)
     values = tl.load(
         hidden + token_idx * hidden_stride + offsets * hidden_col_stride,
-        offsets < hidden_size,
+        valid & (offsets < hidden_size),
         other=0,
     )
     tl.store(out_hidden + row * hidden_size + offsets, values, offsets < hidden_size)
@@ -96,8 +98,8 @@ def _stage_sampling_inputs(
     tl.store(out_draft_tokens + row, token)
     tl.store(out_expanded_idx + row, req_idx)
     tl.store(out_local_pos + row, local_pos)
-    tl.store(out_top_k + row, tl.load(top_k + req_idx))
-    tl.store(out_top_p + row, tl.load(top_p + req_idx))
+    tl.store(out_top_k + row, tl.load(top_k + req_idx, valid, other=1))
+    tl.store(out_top_p + row, tl.load(top_p + req_idx, valid, other=1.0))
     if row < num_reqs:
         slot = tl.load(idx_mapping + row)
         tl.store(out_idx + row, slot)
@@ -209,6 +211,7 @@ class SamplingGraphInputs:
             self.prefill_len,
             self.top_k,
             self.top_p,
+            batch.logits_indices.numel(),
             hidden_states.stride(0),
             hidden_states.stride(1),
             hidden_size,
@@ -222,8 +225,7 @@ class SamplingGraphInputs:
 class SamplingGraphKey:
     num_reqs: int
     speculative: bool
-    top_k: bool
-    top_p: bool
+    filtered: bool
     flashinfer: bool = False
 
 
@@ -252,10 +254,7 @@ class SamplingCudaGraphManager:
             rejection_sampler.num_speculative_steps if rejection_sampler else 0
         )
         self.speculative_supported = rejection_sampler is not None and not (
-            rejection_sampler.enable_adaptive_verification
-            or rejection_sampler.use_block_verification
-            or rejection_sampler.synthetic_conditional_rates is not None
-            or rejection_sampler.watermark_key is not None
+            rejection_sampler.watermark_key is not None
         )
         self.capture_sizes = sorted(
             {n for n in capture_sizes if 0 < n <= sampler.sampling_states.max_num_reqs},
@@ -281,12 +280,13 @@ class SamplingCudaGraphManager:
     def _sample(
         self, key: SamplingGraphKey, inputs: SamplingGraphInputs
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        logits = self.compute_logits(inputs.hidden_states)
-        top_k = inputs.top_k if key.top_k else None
-        top_p = inputs.top_p if key.top_p else None
-        if key.top_k or key.top_p:
-            logits = logits.to(dtype=torch.float32, copy=True)
+        logits = self.compute_logits(inputs.hidden_states).to(torch.float32)
+        # The LM head regenerates this graph-owned storage on every replay.
+        apply_temperature(logits, inputs.expanded_idx_mapping, inputs.temperature)
+        top_k = inputs.top_k if key.filtered else None
+        top_p = inputs.top_p if key.filtered else None
         if key.speculative:
+            assert self.rejection_sampler is not None
             logits = apply_top_k_top_p(logits, top_k, top_p)
             tokens, num_sampled = rejection_sample(
                 logits,
@@ -300,7 +300,9 @@ class SamplingCudaGraphManager:
                 inputs.temperature,
                 inputs.seeds,
                 self.num_speculative_tokens,
+                self.rejection_sampler.synthetic_conditional_rates,
                 use_fp64=self.sampler.use_fp64_gumbel,
+                use_block_verification=self.rejection_sampler.use_block_verification,
             )
         else:
             tokens, _ = self.sampler.sample_from_processed_logits(
@@ -341,16 +343,10 @@ class SamplingCudaGraphManager:
                     self.sampler.sampling_states.vocab_size
                 ):
                     continue
-                for top_k, top_p in product((False, True), repeat=2):
-                    keys.append(SamplingGraphKey(num_reqs, speculative, top_k, top_p))
-                    if (
-                        not speculative
-                        and (top_k or top_p)
-                        and self.sampler.use_flashinfer
-                    ):
-                        keys.append(
-                            SamplingGraphKey(num_reqs, False, top_k, top_p, True)
-                        )
+                for filtered in (False, True):
+                    keys.append(SamplingGraphKey(num_reqs, speculative, filtered))
+                    if not speculative and filtered and self.sampler.use_flashinfer:
+                        keys.append(SamplingGraphKey(num_reqs, False, True, True))
         # The shared pool's largest allocations should be captured first.
         keys.sort(
             key=lambda key: key.num_reqs
@@ -427,9 +423,10 @@ class SamplingCudaGraphManager:
     ) -> SamplerOutput | None:
         speculative = batch.num_draft_tokens > 0
         width = self.num_speculative_tokens + 1 if speculative else 1
+        num_logits = batch.logits_indices.numel()
         if (
             (batch.num_reqs, speculative) not in self.captured_shapes
-            or batch.logits_indices.numel() != batch.num_reqs * width
+            or not batch.num_reqs <= num_logits <= batch.num_reqs * width
         ):
             return None
         sampler = self.sampler
@@ -453,11 +450,7 @@ class SamplingCudaGraphManager:
             bad_words = cast(BadWordsState, sampler.logits_processors[2])
             thinking = sampler.thinking_budget_state
             if (
-                np.any(
-                    (states.temperature.np[ids] != 0)
-                    & (states.temperature.np[ids] != 1)
-                )
-                or np.any(states.min_p.np[ids] != 0)
+                np.any(states.min_p.np[ids] != 0)
                 or np.any(bias.use_logit_bias[ids])
                 or np.any(penalties.use_penalty[ids])
                 or np.any(bad_words.num_bad_words.np[ids])
@@ -478,7 +471,7 @@ class SamplingCudaGraphManager:
             and not np.any(states.seeds_set[ids])
         )
         key = SamplingGraphKey(
-            batch.num_reqs, speculative, top_k, top_p, use_flashinfer
+            batch.num_reqs, speculative, top_k or top_p, use_flashinfer
         )
         graph = self.graphs.get(key)
         if graph is None:
