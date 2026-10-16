@@ -582,6 +582,9 @@ def flashinfer_sample(
     k: torch.Tensor | None,
     p: torch.Tensor | None,
     generators: dict[int, torch.Generator] = {},  # noqa
+    *,
+    seed: torch.Tensor | None = None,
+    offset: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Sample from the logits using FlashInfer.
 
@@ -600,18 +603,18 @@ def flashinfer_sample(
         # Top-p only.
         probs = logits.softmax(dim=-1, dtype=torch.float32)
         next_token_ids = flashinfer.sampling.top_p_sampling_from_probs(
-            probs, p, deterministic=True
+            probs, p, deterministic=True, seed=seed, offset=offset
         )
     elif p is None:
         # Top-k only.
         probs = logits.softmax(dim=-1, dtype=torch.float32)
         next_token_ids = flashinfer.sampling.top_k_sampling_from_probs(
-            probs, k, deterministic=True
+            probs, k, deterministic=True, seed=seed, offset=offset
         )
     else:
         # Both top-k and top-p.
         next_token_ids = flashinfer.sampling.top_k_top_p_sampling_from_logits(
-            logits, k, p, deterministic=True
+            logits, k, p, deterministic=True, seed=seed, offset=offset
         )
 
     return next_token_ids.view(-1)
