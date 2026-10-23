@@ -4,41 +4,34 @@
 """Compatibility entrypoint for the packaged GSM8K evaluator."""
 
 from vllm.evals.gsm8k import (
-    INVALID as INVALID,
+    INVALID,
+    _build_gsm8k_prompts,
+    _score_gsm8k,
+    call_vllm_api,
+    call_vllm_chat_api,
+    download_and_cache_file,
+    evaluate_gsm8k,
+    evaluate_gsm8k_offline,
+    get_answer_value,
+    load_gsm8k_data,
+    main,
+    read_jsonl,
 )
-from vllm.evals.gsm8k import (
-    _build_gsm8k_prompts as _build_gsm8k_prompts,
-)
-from vllm.evals.gsm8k import (
-    _score_gsm8k as _score_gsm8k,
-)
-from vllm.evals.gsm8k import (
-    call_vllm_api as call_vllm_api,
-)
-from vllm.evals.gsm8k import (
-    call_vllm_chat_api as call_vllm_chat_api,
-)
-from vllm.evals.gsm8k import (
-    download_and_cache_file as download_and_cache_file,
-)
-from vllm.evals.gsm8k import (
-    evaluate_gsm8k as evaluate_gsm8k,
-)
-from vllm.evals.gsm8k import (
-    evaluate_gsm8k_offline as evaluate_gsm8k_offline,
-)
-from vllm.evals.gsm8k import (
-    get_answer_value as get_answer_value,
-)
-from vllm.evals.gsm8k import (
-    load_gsm8k_data as load_gsm8k_data,
-)
-from vllm.evals.gsm8k import (
-    main as main,
-)
-from vllm.evals.gsm8k import (
-    read_jsonl as read_jsonl,
-)
+
+__all__ = [
+    "INVALID",
+    "_build_gsm8k_prompts",
+    "_score_gsm8k",
+    "call_vllm_api",
+    "call_vllm_chat_api",
+    "download_and_cache_file",
+    "evaluate_gsm8k",
+    "evaluate_gsm8k_offline",
+    "get_answer_value",
+    "load_gsm8k_data",
+    "main",
+    "read_jsonl",
+]
 
 if __name__ == "__main__":
     main()
