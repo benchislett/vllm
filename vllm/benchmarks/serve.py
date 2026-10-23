@@ -1836,8 +1836,7 @@ def add_cli_args(parser: FlexibleArgumentParser):
     )
     parser.add_argument(
         "--ignore-eos",
-        action=argparse.BooleanOptionalAction,
-        default=False,
+        action="store_true",
         help="Set ignore_eos flag when sending the benchmark request."
         "Warning: ignore_eos is not supported in deepspeed_mii and tgi.",
     )
@@ -2204,7 +2203,6 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     if (
         args.dataset_name in ("random", "random-mm")
         and args.backend in OPENAI_COMPATIBLE_BACKENDS
-        and not args._allow_eos
     ):
         args.ignore_eos = True
 
@@ -2519,7 +2517,7 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
             # Append a newline.
             if args.append_result and outfile.tell() != 0:
                 outfile.write("\n")
-            json.dump(report, outfile, allow_nan=args.report_format != "byog")
+            json.dump(report, outfile)
         save_to_pytorch_benchmark_format(args, result_json, file_name)
 
     return result_json

@@ -42,7 +42,6 @@
 --metric-percentiles
 --min-p
 --model
---no-ignore-eos
 --no-oversample
 --no-reranker
 --no-self-timed

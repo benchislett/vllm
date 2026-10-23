@@ -47,7 +47,6 @@ const PYTHON_ONLY: &[&str] = &[
     // BYOG workload presets and measurement reports
     "--workload",
     "--report-format",
-    "--no-ignore-eos",
     // misc python-side controls
     "--hf-name",
     "--no-stream",
