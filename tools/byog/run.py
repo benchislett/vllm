@@ -72,16 +72,15 @@ def ready(child: subprocess.Popen, url: str, model: str, timeout: float) -> None
 
 def probe(url: str, alias: str, spec: dict) -> dict:
     settings = spec["evals"][0].get("args", {}) if spec["evals"] else {}
-    chat = settings.get("use-chat-completions", False)
-    payload = {"model": alias, "max_tokens": 32, "temperature": 0}
-    if chat:
-        payload["messages"] = [{"role": "user", "content": "Reply with the number 1."}]
-        for key in ("chat-template-kwargs", "reasoning-effort"):
-            if key in settings:
-                payload[key.replace("-", "_")] = settings[key]
-    else:
-        payload["prompt"] = "Reply with the number 1."
-    endpoint = "/v1/chat/completions" if chat else "/v1/completions"
+    generation = settings.get("generation-config", {})
+    payload = {
+        **generation.get("extra_body", {}),
+        "model": alias,
+        "messages": [{"role": "user", "content": "Reply with the number 1."}],
+        "max_tokens": 32,
+        "temperature": 0,
+    }
+    endpoint = "/v1/chat/completions"
     request = urllib.request.Request(
         url + endpoint,
         data=json.dumps(payload).encode(),
@@ -104,6 +103,9 @@ def plan(spec: dict, output: Path, url: str, alias: str, tokenizer: str) -> list
         "model",
         "tokenizer",
         "base-url",
+        "api-url",
+        "work-dir",
+        "eval-config",
         "host",
         "port",
         "report-format",
@@ -114,20 +116,22 @@ def plan(spec: dict, output: Path, url: str, alias: str, tokenizer: str) -> list
         "append-result",
     }
     for i, evaluation in enumerate(spec["evals"]):
-        args = evaluation.get("args", {})
+        args = dict(evaluation.get("args", {}))
         if set(args) & owned:
             raise ValueError(
                 "Eval args override runner-owned endpoint or report settings"
             )
-        name = f"eval-{i}-gsm8k"
+        name = f"eval-{i}-{evaluation['name']}"
         report = output / f"{name}.json"
         command = [
             "vllm",
             "eval",
-            "gsm8k",
+            evaluation["name"],
             *options(args),
-            "--base-url",
-            url,
+            "--api-url",
+            url + "/v1",
+            "--work-dir",
+            str(output / name),
             "--model",
             alias,
             "--report-format",
@@ -135,8 +139,24 @@ def plan(spec: dict, output: Path, url: str, alias: str, tokenizer: str) -> list
             "--save-results",
             str(report),
         ]
-        if "data-dir" not in args and os.getenv("BYOG_DATA_DIR"):
-            command += ["--data-dir", os.environ["BYOG_DATA_DIR"]]
+        if (
+            evaluation["name"] == "gsm8k"
+            and os.getenv("BYOG_DATA_DIR")
+            and not set(args) & {"dataset-args", "dataset-hub"}
+        ):
+            command += [
+                "--dataset-hub",
+                "local",
+                "--dataset-args",
+                json.dumps(
+                    {
+                        "gsm8k": {
+                            "local_path": os.environ["BYOG_DATA_DIR"],
+                            "subset_list": ["default"],
+                        }
+                    }
+                ),
+            ]
         jobs.append({"name": name, "command": command, "report": str(report)})
     for i, benchmark in enumerate(spec["benchmarks"]):
         args = benchmark.get("args", {})
@@ -184,7 +204,7 @@ def validate_commands(jobs: list[dict], config: dict) -> None:
     from vllm.benchmarks.serve import add_cli_args as bench_args
     from vllm.benchmarks.workloads import resolve_workload
     from vllm.entrypoints.common.cli_args import make_arg_parser
-    from vllm.evals.gsm8k import add_cli_args as eval_args
+    from vllm.evals.runner import add_cli_args as eval_args
     from vllm.utils.argparse_utils import FlexibleArgumentParser
 
     if platforms.current_platform.is_unspecified():
@@ -198,7 +218,7 @@ def validate_commands(jobs: list[dict], config: dict) -> None:
             resolve_workload(parser.parse_args(job["command"][3:]))
         else:
             eval_args(parser)
-            parser.parse_args(job["command"][3:])
+            parser.parse_args(job["command"][2:])
     parser = make_arg_parser(FlexibleArgumentParser())
     parser.parse_args(["MODEL", *options(config)])
 

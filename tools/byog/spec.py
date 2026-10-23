@@ -128,10 +128,8 @@ def resolve(path: Path, overrides: list[Path]) -> dict:
             {
                 "name": "gsm8k",
                 "args": {
-                    "num-questions": 32,
-                    "use-chat-completions": True,
-                    "max-tokens": 1024,
-                    "temperature": 0,
+                    "limit": 32,
+                    "generation-config": {"max_tokens": 1024, "temperature": 0},
                 },
             }
         ],
@@ -141,8 +139,12 @@ def resolve(path: Path, overrides: list[Path]) -> dict:
         [{"workload": "8k1k-v1", "concurrency": [1, 16, 64, 256], "args": {}}],
     )
     for evaluation in spec["evals"]:
-        if set(evaluation) - {"name", "args"} or evaluation.get("name") != "gsm8k":
-            raise ValueError("Only the gsm8k evaluation is currently supported")
+        if set(evaluation) - {"name", "args"} or not re.fullmatch(
+            r"[A-Za-z0-9_-]+", str(evaluation.get("name", ""))
+        ):
+            raise ValueError(
+                "Eval entries require a dataset or preset name and optional args"
+            )
     for benchmark in spec["benchmarks"]:
         if set(benchmark) - {"workload", "concurrency", "args"}:
             raise ValueError("Unknown benchmark settings")

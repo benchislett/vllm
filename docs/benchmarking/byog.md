@@ -1,7 +1,7 @@
 # BYOG: build an image and run a suite
 
-BYOG combines a vLLM CI image with a runner, a pinned GSM8K dataset and reference
-specs. Image creation runs on CPU builders; contributors run inference on their
+BYOG combines a vLLM CI image with a runner, EvalScope, a pinned GSM8K dataset
+and reference specs. Image creation runs on CPU builders; contributors run inference on their
 own GPUs. This initial implementation supports one local server per run and
 NVIDIA CUDA images for amd64 or arm64.
 
@@ -38,7 +38,9 @@ docker run --rm --gpus all --ipc host \
 
 Model weights are downloaded on the machine running the suite, using the pinned
 model revision. The benchmark tokenizer is resolved at that same revision.
-The image contains clients and datasets, not model weights.
+The image contains the clients and pinned GSM8K data, not model weights. Other
+evaluation datasets are loaded by EvalScope at run time (or from a mounted local
+snapshot). Install `vllm[eval]` when running from a local checkout.
 
 The runner starts one server with a unique served-model name, waits for that
 identity, and probes generation before running the suite. Evaluations and
@@ -68,6 +70,39 @@ benchmarks:
       num-prompts: 1000
 ```
 
+Evaluations accept any registered EvalScope dataset name or the MRCR presets
+from [Accuracy Evaluation](evaluation.md). For example, an override can replace
+the smoke evaluation list:
+
+```yaml
+evals:
+  - name: gsm8k
+    args:
+      generation-config: {max_tokens: 32768, temperature: 0.7}
+  - name: gpqa_diamond
+    args:
+      generation-config: {max_tokens: 32768, temperature: 0.7}
+  - name: aime25
+    args:
+      generation-config: {max_tokens: 32768, temperature: 0.7}
+  - name: mrcr-v2-8needle-128k
+    args:
+      generation-config: {max_tokens: 4096, temperature: 0}
+  - name: mrcr-v2-8needle-256k
+    args:
+      generation-config: {max_tokens: 4096, temperature: 0}
+```
+
+Select a model and server context large enough for the MRCR inputs **and output**;
+the included 16k smoke server configuration cannot run this expanded suite.
+These are example sampling settings, not a calibrated reference for every model.
+Use `limit` for a smoke subset and `eval-batch-size` for request concurrency.
+In the image, GSM8K defaults to its bundled local snapshot; explicit
+`dataset-args` or `dataset-hub` disables that automatic selection. For other
+datasets, use those options to pin a revision or mount a local dataset snapshot.
+The runner owns `api-url`, `work-dir`, model and report paths, and accepts eval
+settings directly in the spec rather than external `eval-config` files.
+
 An optional recipe points to a **local rendered single-node Recipes JSON**:
 
 ```yaml
@@ -96,7 +131,8 @@ The output directory contains:
 
 - `spec.resolved.yaml`, the exact resolved configuration, plus recipe JSON when used.
 - `plan.json`, `server.yaml`, `server.json`, server/client logs and a generation probe.
-- Individual `byog.measurement/v1` reports, including raw request/question records.
+- Individual `byog.measurement/v1` reports and benchmark request records.
+- Per-eval directories containing EvalScope configs, predictions, reviews and native reports.
 - `result.json` (`byog.result/v0`), job statuses, build metadata and basic hardware snapshots.
 - `manifest.json`, file sizes and SHA256 hashes; `bundle.tar.gz` containing those files.
 - `repro.sh`, using the reported image digest when supplied, or the local Python runner.
