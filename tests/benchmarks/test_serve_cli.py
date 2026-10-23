@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import json
 import subprocess
 import tempfile
 import time
@@ -100,7 +101,7 @@ def ssl_server():
 
 
 @pytest.mark.benchmark
-def test_bench_serve(server):
+def test_bench_serve(server, tmp_path):
     # Test default model detection and input/output len
     command = [
         "vllm",
@@ -116,12 +117,27 @@ def test_bench_serve(server):
         "4",
         "--num-prompts",
         "5",
+        "--workload",
+        "fixed-1k1k-v1",
+        "--max-concurrency",
+        "1",
+        "--report-format",
+        "byog",
+        "--result-dir",
+        str(tmp_path),
+        "--result-filename",
+        "report.json",
     ]
     result = subprocess.run(command, capture_output=True, text=True)
     print(result.stdout)
     print(result.stderr)
 
     assert result.returncode == 0, f"Benchmark failed: {result.stderr}"
+    report = json.loads((tmp_path / "report.json").read_text())
+    assert report["status"] == "completed"
+    assert report["metrics"]["completed"] == 5
+    assert report["settings"]["workload"]["resolved"]["random_input_len"] == 32
+    assert len(report["records"]["errors"]) == 5
 
 
 @pytest.mark.benchmark

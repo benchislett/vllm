@@ -44,6 +44,10 @@ const PYTHON_ONLY: &[&str] = &[
     "--plot-dataset-stats",
     "--plot-timeline",
     "--timeline-itl-thresholds",
+    // BYOG workload presets and measurement reports
+    "--workload",
+    "--report-format",
+    "--no-ignore-eos",
     // misc python-side controls
     "--hf-name",
     "--no-stream",

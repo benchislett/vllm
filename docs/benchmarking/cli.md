@@ -1566,3 +1566,48 @@ to account for the extra prompt which is the query. The token accounting to repo
 throughput numbers correctly is also adjusted.
 
 </details>
+
+## Versioned workloads and BYOG reports
+
+The Python `vllm bench serve` client supports fixed-length workload presets:
+
+```bash
+vllm bench serve --model MODEL --workload fixed-8k1k-v1 \
+    --max-concurrency 64 --report-format byog \
+    --result-dir results --result-filename 8k1k-c64.json
+```
+
+`fixed-1k1k-v1`, `fixed-8k1k-v1` and `fixed-1k8k-v1` generate random-token
+requests with input/output lengths of 1024/1024, 8192/1024 and 1024/8192.
+They use seed 0, zero length variation, no shared prefix, 1000 measured requests,
+one warmup request, unlimited arrival rate, and ignore EOS. Set concurrency
+explicitly; each point in a concurrency sweep is a separate invocation.
+Warmup uses the existing client's repeated warmup request; server prefix-cache
+state is not reset by this client. These are InferenceX-style shapes, not a
+claim of equivalence to an official InferenceX run.
+
+Explicit options override preset values regardless of argument order. For example,
+`--num-prompts 20 --num-warmups 0 --output-len 128` makes a smaller custom run;
+`--no-ignore-eos` permits early EOS. The report records resolved values and marks
+changed presets as modified. Presets require the random dataset. Omitting
+`--workload` keeps the existing benchmark defaults.
+
+`--report-format byog` implies `--save-result --save-detailed` and writes a
+`byog.measurement/v1` envelope to the normal result path. The envelope contains
+client version, resolved client settings and their SHA256, metrics with existing
+unit-bearing names, per-request arrays, and completion status (`completed` or
+`partial`). Non-finite values are strings such as `"inf"`, so the output is valid
+JSON. `--append-result` writes one report per line. The Python return value and
+optional PyTorch-format sidecar retain the legacy result structure.
+
+Reports preserve per-request content, so review them before sharing. Custom HTTP
+headers are redacted. Server identity, image digest, hardware and effective
+server configuration remain unknown (`server: null`): a remote benchmark client
+cannot independently verify them. A BYOG runner can supply that provenance
+when assembling its run bundle. The settings hash identifies client settings;
+it is not a signature or proof of full run comparability. Report generation does
+not certify correctness, publish results, or update a PR.
+
+These options currently require the Python benchmark client
+(`VLLM_USE_RUST_BENCH=0`). Rust benchmark delegation rejects these Python-only
+flags rather than silently ignoring them.
