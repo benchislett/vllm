@@ -1,80 +1,112 @@
 # Evaluating a running server
 
-`vllm eval gsm8k` runs the existing GSM8K few-shot evaluator against a server.
-The client does not need a GPU and does not start or configure the server.
+`vllm eval` runs [EvalScope](https://github.com/modelscope/evalscope) against an
+existing OpenAI-compatible chat server. Install `pip install 'vllm[eval]'`
+(EvalScope 1.14.0). Evaluation dependencies are loaded only when running an eval;
+the client needs no GPU and does not start the server.
 
 ```bash
-vllm eval gsm8k --base-url http://localhost:8000 \
-    --use-chat-completions --num-questions 1319 --num-shots 5 \
-    --max-tokens 1024 --temperature 0 --max-concurrency 32 \
-    --chat-template-kwargs '{"enable_thinking": false}' \
-    --report-format byog --save-results results/gsm8k.json
+vllm eval gsm8k gpqa_diamond aime25 --model YOUR_SERVED_MODEL \
+    --api-url http://localhost:8000/v1 --eval-batch-size 32 \
+    --generation-config '{"max_tokens":32768,"temperature":0.7,"top_p":0.8}' \
+    --work-dir results/math-science
 ```
 
-Choose chat/completion mode, thinking settings, sampling and output budget for
-**the model being evaluated**. The command above is an example for a chat model
-that supports `enable_thinking`; it is not a universal accuracy reference.
-A quick smoke run can use `--num-questions 32`, but its score is not directly
-comparable to a full evaluation. The selected questions are the first N test
-rows; few-shot examples are the first K train rows, matching the existing
-vLLM GSM8K evaluator.
+EvalScope owns dataset loading, prompts, answer extraction and scoring. Other
+registered EvalScope dataset names work through the same interface. GSM8K uses
+EvalScope's default 4-shot prompt and boxed-answer scorer; it is **not directly
+comparable** to the older five-shot, last-integer evaluator in
+`tests/evals/gsm8k/gsm8k_eval.py`, which remains unchanged. GPQA-Diamond uses the
+198-question diamond subset, and AIME25 uses the 2025 competition questions.
+Default dataset sources and few-shot settings come from the installed adapter.
 
-Without `--use-chat-completions`, the evaluator uses raw completions and the
-existing stop strings. Chat mode sends no stop strings and scores final answer
-content, excluding separately returned reasoning. Temperature defaults to zero
-for completions and to the server default for chat. `--temperature`, `--top-p`,
-`--top-k`, `--reasoning-effort` and `--chat-template-kwargs` can make those settings
-explicit. The scorer preserves the existing last-integer extraction behavior;
-this is not an interchangeable implementation of every GSM8K evaluation protocol.
+Choose sampling, thinking settings and output budgets for the model. Use
+`generation_config.extra_body.chat_template_kwargs` for model-specific chat
+options. `--limit 32` makes a smoke test, not a reference score. EvalScope applies
+limits to source rows before adapter filtering, so a limited MRCR run can retain
+fewer rows, or none. A successful exit means a complete scored run, not that an
+accuracy threshold was met. No LLM judge is configured by this launcher.
 
-## Configuration and datasets
+## MRCR v2, eight needles
 
-Client settings can be supplied as YAML:
+```bash
+vllm eval mrcr-v2-8needle-128k mrcr-v2-8needle-256k \
+    --model YOUR_SERVED_MODEL --api-url http://localhost:8000/v1 \
+    --generation-config '{"max_tokens":4096,"temperature":0}' \
+    --work-dir results/mrcr
+```
+
+These presets use EvalScope's `openai_mrcr` adapter for OpenAI's
+[multi-round co-reference benchmark](https://huggingface.co/datasets/openai/mrcr)
+(often called MRCR v2), with `needle_count: [8]`. The 128k preset selects input
+lengths **(65,536, 131,072]**; 256k selects **(131,072, 262,144]**. They are disjoint
+input-length bins, not exact-length synthetic prompts or cumulative “up to”
+scores. EvalScope counts message content with `o200k_base`, without server chat
+framing. The serving model's tokenizer can yield different lengths; configure
+sufficient context space for its prompt **and output**. The adapter's detailed
+score bins include output tokens and can differ from these input filters.
+
+Each preset runs in its own artifact directory, so both lengths can be selected
+in one invocation. `--dataset-args` can override the underlying `openai_mrcr`
+adapter's `extra_params`; overrides are recorded, so an overridden run should
+not be presented as an unchanged preset result.
+
+## Reusing evaluation configs
+
+`--eval-config` accepts EvalScope task YAML, including `datasets`, `dataset_args`,
+`generation_config`, `seed`, `repeats`, `limit` and `eval_batch_size`. It also
+accepts the existing Qwen accuracy configuration shape:
 
 ```yaml
-num-questions: 1319
-num-shots: 5
-use-chat-completions: true
-max-tokens: 1024
-temperature: 0
-max-concurrency: 32
-chat-template-kwargs:
-  enable_thinking: false
+model_name: Qwen/Qwen3.8-Flash-Next-FP8
+datasets:
+  gsm8k: {metric_threshold: 0.98, tolerance: 0.02}
+  aime25: {metric_threshold: 0.90, tolerance: 0.05}
+eval_batch_size: 32
+generation_config:
+  seed: 1236
+  temperature: 0.7
+  top_p: 0.8
+  top_k: 20
+  max_tokens: 32768
+  extra_body:
+    chat_template_kwargs: {enable_thinking: true}
 ```
 
-Use `vllm eval gsm8k --config eval.yaml`. Explicit command-line options take
-precedence over the file. This is a **client** config, not a server recipe or
-an existing pytest model config containing `server_args` and accuracy thresholds.
+```bash
+vllm eval --eval-config tests/evals/qwen4_exp/configs/Qwen3.8-Flash-Next-FP8.yaml \
+    --api-url http://localhost:8000/v1 --work-dir results/qwen
+```
 
-By default, train and test JSONL files come from `openai/grade-school-math` at
-commit `3101c7d5072418e28b9008a6636bde82a006892c`. Downloads are cached separately
-by URL and published atomically. `--dataset-revision` accepts another full
-40-character commit SHA. For offline execution, pass `--data-dir DIR` containing
-`train.jsonl` and `test.jsonl`. Local datasets are identified as local rather
-than claiming the default revision. Every saved result records both content
-SHA256 hashes; questions must fit the selected dataset, and few-shot examples
-must fit the train split.
+The launcher reads `model_name` and dataset names from these CI configs.
+`server_args`, `env`, startup timeouts and metric thresholds belong to the CI
+caller and are not executed or enforced here. Explicit CLI arguments replace
+the corresponding config field; positional names replace the dataset list.
+JSON options replace the whole object rather than merging it. The launcher
+always uses fresh remote chat evaluations; cached prediction reuse is rejected.
+Use `OPENAI_API_KEY` for authentication, or the EvalScope config's `api_key`.
+
+Dataset sources are not automatically pinned. For reproducibility, set
+`dataset_args.DATASET.dataset_revision` (or `hf_dataset_revision` with
+`dataset_hub: huggingface`) to an immutable revision. A local dataset can be
+selected with `dataset_hub: local` and `dataset_args.DATASET.local_path`, using the adapter's row schema
+and EvalScope's split naming. A frozen data snapshot is needed for offline runs.
 
 ## Reports and failures
 
-`--save-results PATH` writes metrics, request settings, dataset identity and
-per-question records. `--report-format byog` requires an output path and wraps
-these in the shared `byog.measurement/v1` format: settings and their hash,
-metrics, records, and `completed` or `partial` status. Server provenance is
-unknown to a remote client. This produces evidence for a suite runner or results
-service; it does not upload data, comment on a PR or certify model correctness.
+`--work-dir` must be empty. Without it, a unique directory is created under
+`eval_results/`. EvalScope keeps its configs, evaluation fingerprints, per-sample
+predictions, reviews, and native reports in per-evaluation subdirectories.
+`result.json` contains the shared `byog.measurement/v1` envelope: EvalScope's
+version, resolved task settings, per-evaluation score and count, full native
+reports, artifact SHA256 hashes, and completion status. API keys are masked in
+the task snapshot. `--save-results PATH` selects another summary path;
+`--report-format evalscope` writes native reports there instead.
 
-Per-question records retain prompts, final answers, expected/predicted values,
-correctness, completion-token usage, and transport/protocol errors. Usage is
-zero when the server omits it, preserving the existing evaluator's accounting.
-Request failures count against overall accuracy and are separately counted as
-`failed_requests`; they produce a partial report and a nonzero exit code after
-the report is saved. A valid but incorrect answer does not make the run partial.
-No accuracy threshold is implied by a successful exit. Dataset/setup errors fail
-before producing an evaluation report. Review raw content before sharing it.
-
-The legacy `python tests/evals/gsm8k/gsm8k_eval.py ...` command delegates to the
-same launcher. Existing Python imports and the offline evaluator remain
-available at their original test-module path. Programmatic calls retain their
-legacy defaults; the CLI now uses pinned datasets, records individual results
-and returns a nonzero exit status on request failures.
+Copy the work directory with the summary: large per-sample records remain in
+EvalScope's artifact files. Treat both as raw evaluation data when sharing.
+A failed, empty or incomplete evaluation produces a partial BYOG report and a
+nonzero exit code; subsequent evaluations still run. Valid wrong answers do not
+make a run partial. Setup/import errors can fail before a report exists.
+Remote server provenance remains unknown. This command does not certify model
+correctness, upload results, or update PRs.
