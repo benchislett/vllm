@@ -33,6 +33,8 @@ steps:
   - vllm/entrypoints
   - vllm/utils/flashinfer.py
   - tests/entrypoints/unit_tests
+  - vllm/evals/
+  - vllm/benchmarks/lib/report.py
   - tests/entrypoints/launchers
   - tests/entrypoints/common
   commands:

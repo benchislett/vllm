@@ -2,6 +2,10 @@
 
 This directory contains a replacement for the lm-eval-harness GSM8K evaluation, using an isolated GSM8K script and vLLM server for better performance and control.
 
+The evaluator is also installed as `vllm eval gsm8k`. See the
+[CLI guide](../../../docs/benchmarking/evaluation.md) for pinned datasets,
+client configuration and BYOG reports. The script below remains supported.
+
 ## Usage
 
 ### Run tests with pytest (like buildkite)
