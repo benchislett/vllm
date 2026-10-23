@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+WORKDIR /opt/vllm-byog
+COPY tools tools
+COPY data /opt/byog-data/gsm8k
+COPY build-info.json build-info.json
+ENV BYOG_DATA_DIR=/opt/byog-data/gsm8k
+RUN pip install --no-cache-dir "evalscope[openai_mrcr]==1.14.0"
+# The base must contain both client features; fail the build for older branches.
+RUN VLLM_USE_RUST_BENCH=0 vllm bench serve --help | grep -q -- --workload \
+    && vllm eval --help >/dev/null
+ENTRYPOINT ["env", "-u", "VLLM_GPU_SYNC_CHECK", "python3", "-m", "tools.byog.run"]

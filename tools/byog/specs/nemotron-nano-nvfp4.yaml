@@ -1,0 +1,26 @@
+schema: byog.spec/v0
+name: nemotron-nano-nvfp4-smoke
+model:
+  id: nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4
+  revision: 6efb4a2a1c1fa277ce7b3df7a1416255011b1c99
+serve:
+  config:
+    tensor-parallel-size: 1
+    max-model-len: 16384
+  env: {}
+evals:
+  - name: gsm8k
+    args:
+      limit: 32
+      eval-batch-size: 16
+      generation-config:
+        max_tokens: 1024
+        temperature: 0
+        extra_body:
+          chat_template_kwargs:
+            enable_thinking: false
+benchmarks:
+  - workload: 8k1k-v1
+    concurrency: [1, 16, 64]
+    args:
+      num-prompts: 128
