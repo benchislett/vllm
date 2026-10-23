@@ -1200,6 +1200,7 @@ steps:
   source_file_dependencies:
   - csrc/gdn/
   - tests/evals/qwen4_exp/
+  - vllm/evals/
   - vllm/model_executor/layers/mamba/
   - vllm/models/qwen4_exp/
   - vllm/v1/attention/backends/short_conv_attn.py
@@ -1216,6 +1217,7 @@ steps:
   source_file_dependencies:
   - csrc/gdn/
   - tests/evals/qwen4_exp/
+  - vllm/evals/
   - vllm/model_executor/layers/mamba/
   - vllm/models/qwen4_exp/
   - vllm/v1/attention/backends/short_conv_attn.py
@@ -1235,6 +1237,7 @@ steps:
       source_file_dependencies:
       - csrc/gdn/
       - tests/evals/qwen4_exp/
+      - vllm/evals/
       - vllm/model_executor/layers/mamba/
       - vllm/models/qwen4_exp/
       - vllm/v1/attention/backends/short_conv_attn.py
