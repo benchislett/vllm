@@ -9,7 +9,6 @@ steps:
   timeout_in_minutes: 45
   source_file_dependencies:
   - csrc/
-  - vllm/evals/
   - vllm/model_executor/layers/quantization
   autorun_on_main: true
   commands:
@@ -24,7 +23,6 @@ steps:
       - image-build-amd
       source_file_dependencies:
       - csrc/
-      - vllm/evals/
       - vllm/model_executor/layers/quantization
       - vllm/model_executor/models/
       - vllm/model_executor/model_loader/
@@ -1202,6 +1200,7 @@ steps:
   source_file_dependencies:
   - csrc/gdn/
   - tests/evals/qwen4_exp/
+  - vllm/evals/
   - vllm/model_executor/layers/mamba/
   - vllm/models/qwen4_exp/
   - vllm/v1/attention/backends/short_conv_attn.py
@@ -1218,6 +1217,7 @@ steps:
   source_file_dependencies:
   - csrc/gdn/
   - tests/evals/qwen4_exp/
+  - vllm/evals/
   - vllm/model_executor/layers/mamba/
   - vllm/models/qwen4_exp/
   - vllm/v1/attention/backends/short_conv_attn.py
@@ -1237,6 +1237,7 @@ steps:
       source_file_dependencies:
       - csrc/gdn/
       - tests/evals/qwen4_exp/
+      - vllm/evals/
       - vllm/model_executor/layers/mamba/
       - vllm/models/qwen4_exp/
       - vllm/v1/attention/backends/short_conv_attn.py

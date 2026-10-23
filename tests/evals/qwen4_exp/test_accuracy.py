@@ -16,14 +16,13 @@ def run_evalscope(
 ) -> dict[str, float]:
     from evalscope.run import run_task
 
+    from vllm.evals.runner import task_config
+
     reports = run_task(
         {
-            "model": eval_config["model_name"],
+            **task_config(eval_config),
             "api_url": base_url,
             "api_key": "EMPTY_TOKEN",
-            "datasets": list(eval_config["datasets"]),
-            "eval_batch_size": eval_config.get("eval_batch_size", 32),
-            "generation_config": eval_config["generation_config"],
             "work_dir": str(work_dir),
             "no_timestamp": True,
         }

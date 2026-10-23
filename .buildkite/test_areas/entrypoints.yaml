@@ -36,10 +36,12 @@ steps:
   - tools/byog/
   - tools/recipes/
   - vllm/evals/
+  - setup.py
   - vllm/benchmarks/lib/report.py
   - tests/entrypoints/launchers
   - tests/entrypoints/common
   commands:
+  - pip install "evalscope[openai_mrcr]==1.14.0"
   - pytest -v -s entrypoints/unit_tests
   - pytest -v -s entrypoints/launchers
   - pytest -v -s entrypoints/common

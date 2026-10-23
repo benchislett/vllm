@@ -1,71 +1,110 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""GSM8K client tests use real HTTP and local data; no inference engine needed."""
+"""Exercise real EvalScope adapters with tiny local datasets and an HTTP server."""
 
 import asyncio
-import hashlib
 import json
 import sys
+from typing import Any
 
 import pytest
 from aiohttp import web
 
-from vllm.evals.gsm8k import _build_gsm8k_prompts, _score_gsm8k
-
-
-def test_packaged_evaluator_preserves_prompts_and_scoring():
-    from tests.evals.gsm8k.gsm8k_eval import evaluate_gsm8k as legacy
-    from vllm.evals.gsm8k import evaluate_gsm8k
-
-    assert legacy is evaluate_gsm8k
-    data = (
-        [{"question": "1+1?", "answer": "Two. #### 2"}],
-        [{"question": "6*7?", "answer": "#### 42"}],
-    )
-    prompts, labels = _build_gsm8k_prompts(1, 1, data=data)
-    assert prompts == ["Question: 1+1?\nAnswer: Two. #### 2\n\nQuestion: 6*7?\nAnswer:"]
-    assert labels == [42]
-    result = _score_gsm8k(["The answer is 42."], [10], labels, 1, 128, 2.0)
-    assert result["accuracy"] == 1.0
-    assert result["invalid_rate"] == 0.0
-    assert result["tokens_per_second"] == 5.0
-
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("chat,fail", [(True, False), (False, True)])
-async def test_eval_cli_records_protocol_dataset_and_transport_failures(
-    tmp_path, chat, fail
-):
-    row = {"question": "What is six times seven?", "answer": "#### 42"}
-    for split in ("train", "test"):
-        (tmp_path / f"{split}.jsonl").write_text(
-            "".join(
-                json.dumps({**row, "question": f"{row['question']} item{i}"}) + "\n"
-                for i in range(2)
-            )
-        )
+@pytest.mark.parametrize("fail", [False, True])
+async def test_eval_cli_multiple_adapters_and_partial_results(tmp_path, fail):
+    rows: dict[str, dict[str, Any]] = {
+        "gsm8k": {"question": "six times seven?", "answer": "#### 42"},
+        "aime25": {"problem": "AIME fixture: six times seven?", "answer": "42"},
+        "gpqa_diamond": {
+            "Question": "GPQA fixture: which is correct?",
+            "Correct Answer": "correct",
+            "Incorrect Answer 1": "wrong1",
+            "Incorrect Answer 2": "wrong2",
+            "Incorrect Answer 3": "wrong3",
+        },
+    }
+    rows["openai_mrcr"] = {
+        "prompt": json.dumps([{"role": "user", "content": "MRCR fixture"}]),
+        "answer": "PREFIXanswer",
+        "random_string_to_prepend": "PREFIX",
+        "n_needles": 8,
+    }
+    dataset_args = {}
+    for name, row in rows.items():
+        path = tmp_path / name
+        path.mkdir()
+        split = "train" if name in ("gpqa_diamond", "openai_mrcr") else "test"
+        (path / f"{split}.jsonl").write_text(json.dumps(row) + "\n")
+        dataset_args[name] = {
+            "local_path": str(path),
+            "few_shot_num": 0,
+            "subset_list": ["default"],
+        }
     config = tmp_path / "eval.yaml"
     config.write_text(
-        "num-questions: 99\nnum-shots: 1\nmax-tokens: 128\ntemperature: 0.0\n"
+        json.dumps(
+            {
+                "model_name": "fixture",
+                "datasets": {name: {"metric_threshold": 0.9} for name in rows},
+                "server_args": "--tensor-parallel-size 4",
+                "startup_max_wait_seconds": 1800,
+                "generation_config": {
+                    "temperature": 0,
+                    "max_tokens": 128,
+                    "retries": 1,
+                },
+                "dataset_args": dataset_args,
+                "dataset_hub": "local",
+                "api_key": "secret-fixture-key",
+            }
+        )
     )
     received = []
 
     async def response(request):
         payload = await request.json()
         received.append(payload)
-        if fail and "item1" in payload.get("prompt", ""):
-            return web.Response(status=503, text="fixture unavailable")
-        choice = (
-            {"message": {"content": "42", "reasoning": "999"}}
-            if chat
-            else {"text": "42"}
-        )
+        prompt = str(payload["messages"])
+        if fail and "AIME fixture" in prompt:
+            return web.json_response(
+                {"error": {"message": "fixture failure"}}, status=400
+            )
+        answer = "\\boxed{42}"
+        if "GPQA fixture" in prompt:
+            import regex as re
+
+            match = re.search(r"([A-D])\) correct", prompt)
+            if match is None:
+                match = re.search(r"([A-D])\. correct", prompt)
+            assert match is not None, prompt
+            answer = f"ANSWER: {match.group(1)}"
+        if "MRCR fixture" in prompt:
+            answer = "PREFIXanswer"
         return web.json_response(
-            {"choices": [choice], "usage": {"completion_tokens": 7}}
+            {
+                "id": "fixture",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "fixture",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": answer},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 5,
+                    "total_tokens": 15,
+                },
+            }
         )
 
     app = web.Application()
-    app.router.add_post("/v1/chat/completions" if chat else "/v1/completions", response)
+    app.router.add_post("/v1/chat/completions", response)
     runner = web.AppRunner(app)
     await runner.setup()
     try:
@@ -76,56 +115,89 @@ async def test_eval_cli_records_protocol_dataset_and_transport_failures(
             "-m",
             "vllm.entrypoints.cli.main",
             "eval",
-            "gsm8k",
-            "--config",
+            "--eval-config",
             str(config),
-            "--data-dir",
-            str(tmp_path),
-            "--num-questions",
-            "2",
-            "--max-concurrency",
+            "--api-url",
+            f"http://127.0.0.1:{port}/v1",
+            "--eval-batch-size",
             "1",
-            "--base-url",
-            f"http://127.0.0.1:{port}",
-            "--report-format",
-            "byog",
-            "--save-results",
-            str(tmp_path / "result.json"),
+            "--work-dir",
+            str(tmp_path / "output"),
         ]
-        if chat:
-            command += [
-                "--use-chat-completions",
-                "--chat-template-kwargs",
-                '{"enable_thinking": false}',
-            ]
         process = await asyncio.create_subprocess_exec(
             *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
         )
         try:
-            output, _ = await asyncio.wait_for(process.communicate(), timeout=60)
+            output, _ = await asyncio.wait_for(process.communicate(), timeout=120)
         finally:
             if process.returncode is None:
                 process.kill()
                 await process.wait()
-        assert process.returncode == (1 if fail else 0), output.decode()
+        assert process.returncode == int(fail), output.decode()
     finally:
         await runner.cleanup()
-    report = json.loads((tmp_path / "result.json").read_text())
-    assert len(received) == 2
-    assert all(p["max_tokens"] == 128 and p["temperature"] == 0.0 for p in received)
-    assert ("stop" not in received[0]) if chat else ("stop" in received[0])
-    if chat:
-        assert received[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    report = json.loads((tmp_path / "output/result.json").read_text())
+    assert report["status"] == ("partial" if fail else "completed")
     assert report["schema"] == "byog.measurement/v1"
     assert report["server"] is None
-    assert report["status"] == ("partial" if fail else "completed")
-    assert report["metrics"]["accuracy"] == (0.5 if fail else 1.0)
-    assert report["metrics"]["failed_requests"] == int(fail)
-    assert (
-        report["settings"]["dataset"]["sha256"]["test"]
-        == hashlib.sha256((tmp_path / "test.jsonl").read_bytes()).hexdigest()
+    assert report["metrics"]["gsm8k"]["score"] == 1
+    assert report["metrics"]["gpqa_diamond"]["score"] == 1
+    assert report["metrics"]["openai_mrcr"]["score"] == 1
+    if not fail:
+        assert report["metrics"]["aime25"]["score"] == 1
+    assert bool(report["records"]["errors"]) == fail
+    assert report["records"]["artifacts"]
+    assert "secret-fixture-key" not in json.dumps(report)
+    assert all(p["max_tokens"] == 128 and p["temperature"] == 0 for p in received)
+    assert report["settings"]["tasks"]["gsm8k"]["eval_batch_size"] == 1
+
+
+def test_mrcr_presets_filter_needles_and_context(tmp_path):
+    from evalscope.api.registry import get_benchmark
+    from evalscope.config import TaskConfig
+
+    from vllm.evals.runner import PRESETS
+
+    path = tmp_path / "mrcr"
+    path.mkdir()
+    (path / "train.jsonl").write_text(
+        "".join(
+            json.dumps(
+                {
+                    "prompt": json.dumps([{"role": "user", "content": " x" * length}]),
+                    "answer": "PREFIXanswer",
+                    "random_string_to_prepend": "PREFIX",
+                    "n_needles": needles,
+                }
+            )
+            + "\n"
+            for needles, length in [
+                (2, 100000),
+                (8, 65536),
+                (8, 100000),
+                (8, 131072),
+                (8, 200000),
+                (8, 262144),
+                (8, 262145),
+            ]
+        )
     )
-    records = report["records"]["questions"]
-    assert len(records) == 2
-    assert records[0]["correct"] and records[0]["completion_tokens"] == 7
-    assert (records[1]["error"] is not None) == fail
+    for name, preset in PRESETS.items():
+        task = TaskConfig(
+            model="fixture",
+            api_url="http://localhost/v1",
+            datasets=["openai_mrcr"],
+            dataset_hub="local",
+            dataset_args={
+                "openai_mrcr": {
+                    "local_path": str(path),
+                    "extra_params": preset["extra_params"],
+                }
+            },
+        )
+        adapter = get_benchmark("openai_mrcr", task)
+        data = adapter.load()
+        samples = list(data[0]["default"])
+        expected = [100000, 131072] if name.endswith("128k") else [200000, 262144]
+        assert [s.metadata["raw_input_tok_cnt"] for s in samples] == expected
+        assert all(s.metadata["n_needles"] == 8 for s in samples)

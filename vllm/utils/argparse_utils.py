@@ -569,8 +569,6 @@ class FlexibleArgumentParser(ArgumentParser):
         if args[0].startswith("-"):
             # No sub command (e.g., api_server entry point)
             args = config_args + args[0:index] + args[index + 2 :]
-        elif args[:2] == ["eval", "gsm8k"]:
-            args = args[:2] + config_args + args[2:index] + args[index + 2 :]
         elif args[0] == "serve" or args[:2] == ["snapshot", "create"]:
             model_index = 1 if args[0] == "serve" else 2
             model_in_cli = len(args) > model_index and not args[model_index].startswith(
