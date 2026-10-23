@@ -118,7 +118,7 @@ def test_bench_serve(server, tmp_path):
         "--num-prompts",
         "5",
         "--workload",
-        "fixed-1k1k-v1",
+        "1k1k-v1",
         "--max-concurrency",
         "1",
         "--report-format",

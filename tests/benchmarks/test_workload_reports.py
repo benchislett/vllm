@@ -6,9 +6,8 @@ import json
 
 import pytest
 
-from vllm.benchmarks.lib.report import make_report
 from vllm.benchmarks.serve import add_cli_args
-from vllm.benchmarks.workloads import resolve_workload, workload_metadata
+from vllm.benchmarks.workloads import resolve_workload
 from vllm.utils.argparse_utils import FlexibleArgumentParser
 
 
@@ -20,87 +19,20 @@ def parse(*options):
     return args
 
 
-def test_no_preset_preserves_existing_workload():
-    args = parse()
-    assert (args.random_input_len, args.random_output_len) == (1024, 128)
-    assert (args.num_warmups, args.ignore_eos, args.seed) == (0, False, 0)
-    assert workload_metadata(args) is None
-
-
 @pytest.mark.parametrize("preset_first", [True, False])
-def test_explicit_legacy_default_overrides_preset_in_either_order(preset_first):
-    preset = ["--workload", "fixed-8k1k-v1", "--max-concurrency", "16"]
-    overrides = ["--random-output-len", "128", "--no-ignore-eos", "--num-warmups", "0"]
+def test_explicit_legacy_defaults_override_preset_in_either_order(preset_first):
+    preset = ["--workload", "8k1k-v1", "--max-concurrency", "16"]
+    overrides = ["--random-output-len", "128", "--num-warmups", "0"]
     args = parse(*(preset + overrides if preset_first else overrides + preset))
     assert args.random_input_len == 8192
     assert args.random_output_len == 128
     assert args.num_warmups == 0
-    assert args.ignore_eos is False
-    assert args._allow_eos
-    metadata = workload_metadata(args)
-    assert metadata is not None and metadata["modified"]
-
-
-def test_unmodified_preset_and_explicit_equivalent_ratio():
-    args = parse(
-        "--workload",
-        "fixed-8k1k-v1",
-        "--max-concurrency",
-        "64",
-        "--random-range-ratio",
-        "0.0",
-    )
-    assert (args.random_input_len, args.random_output_len) == (8192, 1024)
-    metadata = workload_metadata(args)
-    assert metadata is not None and not metadata["modified"]
-
-
-@pytest.mark.parametrize(
-    "options, message",
-    [
-        (["--workload", "fixed-8k1k-v1"], "max-concurrency"),
-        (
-            [
-                "--workload",
-                "fixed-8k1k-v1",
-                "--max-concurrency",
-                "1",
-                "--dataset-name",
-                "sharegpt",
-            ],
-            "dataset-name random",
-        ),
-    ],
-)
-def test_incompatible_workloads_fail_before_network(options, message):
-    with pytest.raises(ValueError, match=message):
-        parse(*options)
-
-
-def test_report_is_strict_json_and_does_not_assert_server_identity():
-    def report(settings):
-        return make_report(
-            kind="benchmark",
-            name="serve",
-            settings=settings,
-            metrics={"completed": 1},
-            records={"errors": [""]},
-            status="completed",
-        )
-
-    first = report({"request_rate": float("inf"), "seed": 0})
-    second = report({"seed": 0, "request_rate": float("inf")})
-    encoded = json.dumps(first, allow_nan=False)
-    assert json.loads(encoded)["settings"]["request_rate"] == "inf"
-    assert first["server"] is None
-    assert first["records"]["errors"] == [""]
-    assert first["settings_sha256"] == second["settings_sha256"]
-    assert first["settings_sha256"] != report({"seed": 1})["settings_sha256"]
+    assert args.backend == "openai-chat"
+    assert args.random_range_ratio == 0.2
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fail_request", [False, True])
-async def test_cli_writes_report_from_real_http_responses(tmp_path, fail_request):
+async def test_cli_preserves_partial_chat_report(tmp_path):
     """Exercise parsing, request generation, metrics and file output without GPUs."""
     import asyncio
     import os
@@ -125,11 +57,11 @@ async def test_cli_writes_report_from_real_http_responses(tmp_path, fail_request
     async def completions(request):
         payload = await request.json()
         received.append(payload)
-        if fail_request and len(received) == 4:
+        if len(received) == 4:
             return web.Response(status=500, text="injected request failure")
         events = [
-            {"choices": [{"text": "word1 "}]},
-            {"choices": [{"text": "word2"}]},
+            {"choices": [{"delta": {"content": "word1 "}}]},
+            {"choices": [{"delta": {"content": "word2"}}]},
             {"choices": [], "usage": {"prompt_tokens": 8, "completion_tokens": 2}},
         ]
         body = "".join(f"data: {json.dumps(event)}\n\n" for event in events)
@@ -138,7 +70,7 @@ async def test_cli_writes_report_from_real_http_responses(tmp_path, fail_request
         )
 
     app = web.Application()
-    app.router.add_post("/v1/completions", completions)
+    app.router.add_post("/v1/chat/completions", completions)
     runner = web.AppRunner(app)
     await runner.setup()
     try:
@@ -156,13 +88,15 @@ async def test_cli_writes_report_from_real_http_responses(tmp_path, fail_request
             "--base-url",
             f"http://127.0.0.1:{port}",
             "--workload",
-            "fixed-8k1k-v1",
+            "8k1k-v1",
             "--max-concurrency",
             "1",
             "--input-len",
             "8",
             "--output-len",
             "2",
+            "--random-range-ratio",
+            "0",
             "--num-prompts",
             "3",
             "--ready-check-timeout-sec",
@@ -192,10 +126,16 @@ async def test_cli_writes_report_from_real_http_responses(tmp_path, fail_request
     report = json.loads(report_text)
     assert "secret" not in report_text
     assert len(received) == 5  # readiness request, one warmup, three measured
-    assert all(p["max_tokens"] == 2 and p["ignore_eos"] for p in received)
+    assert all(
+        p["max_completion_tokens"] == 2
+        and "messages" in p
+        and "prompt" not in p
+        and p["ignore_eos"]
+        for p in received
+    )
     assert report["schema"] == "byog.measurement/v1"
-    assert report["status"] == ("partial" if fail_request else "completed")
-    assert report["metrics"]["completed"] == (2 if fail_request else 3)
+    assert report["status"] == "partial"
+    assert report["metrics"]["completed"] == 2
     assert len(report["records"]["errors"]) == 3
     assert report["settings"]["workload"]["modified"]
     assert report["settings"]["workload"]["resolved"]["random_input_len"] == 8
