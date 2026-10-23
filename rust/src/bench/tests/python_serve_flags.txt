@@ -74,6 +74,7 @@
 --random-range-ratio
 --ready-check-timeout-sec
 --repetition-penalty
+--report-format
 --request-id-prefix
 --request-rate
 --result-dir
@@ -105,3 +106,4 @@
 --top-p
 --trust-remote-code
 --use-beam-search
+--workload

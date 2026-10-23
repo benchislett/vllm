@@ -1566,3 +1566,54 @@ to account for the extra prompt which is the query. The token accounting to repo
 throughput numbers correctly is also adjusted.
 
 </details>
+
+## Versioned workloads and BYOG reports
+
+The Python `vllm bench serve` client supports versioned workload shapes:
+
+```bash
+vllm bench serve --model MODEL --workload 8k1k-v1 \
+    --max-concurrency 64 --report-format byog \
+    --result-dir results --result-filename 8k1k-c64.json
+```
+
+`1k1k-v1` and `8k1k-v1` generate random-token content with nominal input/output
+lengths of 1024/1024 and 8192/1024. They use seed 0, **20% length variation**
+(vLLM's symmetric 80–120% range), no shared prefix, 1000 measured requests,
+one warmup request and unlimited arrival rate. Concurrency must be explicit.
+
+Presets require `openai-chat` with `/v1/chat/completions`: random content is sent
+as user messages, and **the server applies its chat template**. The template adds
+input tokens; reports retain actual token usage. This avoids benchmarking raw,
+untemplated random text. The existing random-dataset path already ignores EOS;
+this feature does not change EOS handling or introduce another EOS flag.
+
+The shapes are InferenceX-style, not equivalent official runs. At
+[InferenceX revision ad252464](https://github.com/SemiAnalysisAI/InferenceX/blob/ad252464a84237ebd8a87c5c826e6a2230494a38/inferencex-e2e/infx/bench_serving/benchmark_serving.py#L263),
+its ratio is a lower-bound multiplier: its workflow's 0.8 means 80–100%, unlike
+vLLM's symmetric ratio. Warmup here uses the existing client's repeated warmup
+request and does not reset server prefix caches.
+
+Explicit options override numerical preset defaults regardless of argument
+order. For example, `--num-prompts 20 --num-warmups 0 --output-len 128` makes a
+smaller custom run. Reports record resolved values and identify modified presets.
+The random dataset and chat-completions protocol are required for these presets.
+Omitting `--workload` keeps the existing benchmark defaults.
+
+`--report-format byog` implies `--save-result --save-detailed` and writes a
+`byog.measurement/v1` envelope to the normal result path. It contains client
+version, resolved settings and their SHA256, metrics with existing unit-bearing
+names, per-request arrays, and completion status (`completed` or `partial`).
+Non-finite values are normalized to strings such as `"inf"` before serialization.
+`--append-result` writes one report per line. The Python return value and optional
+PyTorch-format sidecar retain the legacy result structure.
+
+Reports preserve per-request content, so review them before sharing. Custom HTTP
+headers are redacted. Server identity, image digest, hardware and effective
+configuration remain unknown (`server: null`); a remote client cannot verify
+them. A BYOG runner supplies provenance when assembling its run bundle. The
+settings hash identifies client settings, not full comparability or authenticity.
+Report generation does not certify correctness, publish results, or update a PR.
+
+These options require the Python client (`VLLM_USE_RUST_BENCH=0`). Rust benchmark
+delegation rejects these Python-only flags instead of ignoring them.
