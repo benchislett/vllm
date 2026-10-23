@@ -6,30 +6,6 @@ import json
 
 import pytest
 
-from vllm.benchmarks.serve import add_cli_args
-from vllm.benchmarks.workloads import resolve_workload
-from vllm.utils.argparse_utils import FlexibleArgumentParser
-
-
-def parse(*options):
-    parser = FlexibleArgumentParser()
-    add_cli_args(parser)
-    args = parser.parse_args(list(options))
-    resolve_workload(args)
-    return args
-
-
-@pytest.mark.parametrize("preset_first", [True, False])
-def test_explicit_legacy_defaults_override_preset_in_either_order(preset_first):
-    preset = ["--workload", "8k1k-v1", "--max-concurrency", "16"]
-    overrides = ["--random-output-len", "128", "--num-warmups", "0"]
-    args = parse(*(preset + overrides if preset_first else overrides + preset))
-    assert args.random_input_len == 8192
-    assert args.random_output_len == 128
-    assert args.num_warmups == 0
-    assert args.backend == "openai-chat"
-    assert args.random_range_ratio == 0.2
-
 
 @pytest.mark.asyncio
 async def test_cli_preserves_partial_chat_report(tmp_path):
@@ -71,18 +47,31 @@ async def test_cli_preserves_partial_chat_report(tmp_path):
 
     app = web.Application()
     app.router.add_post("/v1/chat/completions", completions)
+    cache_enabled = False
+
+    async def metrics(request):
+        return web.Response(
+            text=(
+                "vllm:cache_config_info{"
+                f'enable_prefix_caching="{cache_enabled}",engine="0"}} 1\n'
+                'vllm:prefix_cache_hits_total{engine="0"} 0\n'
+            )
+        )
+
+    app.router.add_get("/metrics", metrics)
     runner = web.AppRunner(app)
     await runner.setup()
     try:
         site = web.TCPSite(runner, "127.0.0.1", 0)
         await site.start()
         port = runner.addresses[0][1]
-        process = await asyncio.create_subprocess_exec(
-            sys.executable,
-            "-m",
-            "vllm.entrypoints.cli.main",
-            "bench",
-            "serve",
+        client = (
+            [os.environ["VLLM_TEST_RUST_BENCH"]]
+            if os.environ.get("VLLM_TEST_RUST_BENCH")
+            else [sys.executable, "-m", "vllm.entrypoints.cli.main", "bench", "serve"]
+        )
+        command = [
+            *client,
             "--model",
             str(tokenizer_dir),
             "--base-url",
@@ -91,14 +80,6 @@ async def test_cli_preserves_partial_chat_report(tmp_path):
             "8k1k-v1",
             "--max-concurrency",
             "1",
-            "--input-len",
-            "8",
-            "--output-len",
-            "2",
-            "--random-range-ratio",
-            "0",
-            "--num-prompts",
-            "3",
             "--ready-check-timeout-sec",
             "5",
             "--report-format",
@@ -109,25 +90,40 @@ async def test_cli_preserves_partial_chat_report(tmp_path):
             "report.json",
             "--header",
             "Authorization=secret",
-            env={**os.environ, "VLLM_USE_RUST_BENCH": "0", "HF_HUB_OFFLINE": "1"},
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        try:
-            output, _ = await asyncio.wait_for(process.communicate(), timeout=60)
-        finally:
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
-        assert process.returncode == 0, output.decode()
+        ]
+
+        async def invoke(*extra):
+            process = await asyncio.create_subprocess_exec(
+                *command,
+                *extra,
+                env={**os.environ, "VLLM_USE_RUST_BENCH": "0", "HF_HUB_OFFLINE": "1"},
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            try:
+                output, _ = await asyncio.wait_for(process.communicate(), timeout=60)
+            finally:
+                if process.returncode is None:
+                    process.kill()
+                    await process.wait()
+            return process.returncode, output.decode()
+
+        code, output = await invoke("--input-len", "8")
+        assert code != 0 and "input-len" in output and not received
+        cache_enabled = True
+        code, output = await invoke()
+        assert code != 0 and "prefix-caching" in output and not received
+        cache_enabled = False
+        code, output = await invoke()
+        assert code == 0, output
     finally:
         await runner.cleanup()
     report_text = (tmp_path / "report.json").read_text()
     report = json.loads(report_text)
     assert "secret" not in report_text
-    assert len(received) == 5  # readiness request, one warmup, three measured
+    assert len(received) == 22  # readiness, one warmup, max(20, 10 * 1) measured
     assert all(
-        p["max_completion_tokens"] == 2
+        819 <= p["max_completion_tokens"] <= 1229
         and "messages" in p
         and "prompt" not in p
         and p["ignore_eos"]
@@ -135,7 +131,6 @@ async def test_cli_preserves_partial_chat_report(tmp_path):
     )
     assert report["schema"] == "byog.measurement/v1"
     assert report["status"] == "partial"
-    assert report["metrics"]["completed"] == 2
-    assert len(report["records"]["errors"]) == 3
-    assert report["settings"]["workload"]["modified"]
-    assert report["settings"]["workload"]["resolved"]["random_input_len"] == 8
+    assert report["metrics"]["completed"] == 19
+    assert len(report["records"]["errors"]) == 20
+    assert report["settings"]["workload"]["resolved"]["random_input_len"] == 8192

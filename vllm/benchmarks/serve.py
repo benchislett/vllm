@@ -60,6 +60,7 @@ from vllm.benchmarks.lib.utils import (
 )
 from vllm.benchmarks.workloads import (
     add_workload_args,
+    prefix_cache_snapshot,
     resolve_workload,
     workload_metadata,
 )
@@ -2143,6 +2144,10 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         # Use default SSL context for HTTPS
         ssl_context = True
 
+    cache_before = None
+    if args.workload is not None:
+        cache_before = await prefix_cache_snapshot(base_url, headers, ssl_context)
+
     # Fetch model from server if not specified
     if args.model is None:
         print("Model not specified, fetching first model from server...")
@@ -2318,6 +2323,17 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         probe_request_rate=args.probe_request_rate,
     )
 
+    cache_error = None
+    if cache_before is not None:
+        try:
+            cache_after = await prefix_cache_snapshot(base_url, headers, ssl_context)
+            if cache_after != cache_before:
+                cache_error = "Prefix-cache counters changed during the workload"
+        except (ValueError, aiohttp.ClientError, TimeoutError) as exc:
+            cache_error = f"Could not verify disabled prefix caching: {exc}"
+        if cache_error:
+            warnings.warn(cache_error, stacklevel=2)
+
     # Save config and results to json
     result_json: dict[str, Any] = {}
 
@@ -2465,6 +2481,7 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
 
     if args.workload is not None:
         result_json["workload"] = workload_metadata(args)
+        result_json["workload"]["prefix_cache_check"] = cache_error or "passed"
 
     report = result_json
     if args.report_format == "byog":
@@ -2502,9 +2519,13 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
                 k: benchmark_result[k] for k in record_fields if k in benchmark_result
             },
             status="completed"
-            if benchmark_result["completed"] == len(input_requests)
+            if cache_error is None
+            and benchmark_result["completed"] == len(input_requests)
             else "partial",
         )
+
+    if args.report_format == "byog" and cache_before is not None:
+        report["records"]["prefix_cache_check"] = cache_error or "passed"
 
     # Save to file
     if args.save_result or args.append_result:
@@ -2520,4 +2541,6 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
             json.dump(report, outfile)
         save_to_pytorch_benchmark_format(args, result_json, file_name)
 
+    if cache_error:
+        raise SystemExit(1)
     return result_json
