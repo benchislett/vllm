@@ -9,6 +9,7 @@ steps:
   timeout_in_minutes: 45
   source_file_dependencies:
   - csrc/
+  - vllm/evals/
   - vllm/model_executor/layers/quantization
   autorun_on_main: true
   commands:
@@ -23,6 +24,7 @@ steps:
       - image-build-amd
       source_file_dependencies:
       - csrc/
+      - vllm/evals/
       - vllm/model_executor/layers/quantization
       - vllm/model_executor/models/
       - vllm/model_executor/model_loader/

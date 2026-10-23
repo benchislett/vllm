@@ -43,6 +43,7 @@ def main():
     import vllm.entrypoints.cli.benchmark.main
     import vllm.entrypoints.cli.collect_env
     import vllm.entrypoints.cli.download_kernels
+    import vllm.entrypoints.cli.eval
     import vllm.entrypoints.cli.launch
     import vllm.entrypoints.cli.openai
     import vllm.entrypoints.cli.preload
@@ -58,6 +59,7 @@ def main():
         vllm.entrypoints.cli.launch,
         vllm.entrypoints.cli.benchmark.main,
         vllm.entrypoints.cli.collect_env,
+        vllm.entrypoints.cli.eval,
         vllm.entrypoints.cli.download_kernels,
         vllm.entrypoints.cli.preload,
         vllm.entrypoints.cli.run_batch,
@@ -69,10 +71,10 @@ def main():
 
     vllm.entrypoints.cli.benchmark.main.maybe_exec_rust_bench()
 
-    # For 'vllm bench *': use CPU instead of UnspecifiedPlatform by default
-    if len(sys.argv) > 1 and sys.argv[1] == "bench":
+    # Client commands must work on machines without an accelerator.
+    if len(sys.argv) > 1 and sys.argv[1] in ("bench", "eval"):
         logger.debug(
-            "Bench command detected, must ensure current platform is not "
+            "Client command detected, must ensure current platform is not "
             "UnspecifiedPlatform to avoid device type inference error"
         )
         from vllm import platforms
