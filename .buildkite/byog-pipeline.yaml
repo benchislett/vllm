@@ -1,0 +1,13 @@
+# Configure a separate Buildkite pipeline for this repository with upload command:
+# buildkite-agent pipeline upload .buildkite/byog-pipeline.yaml
+# Reuse a premerge CPU build queue and its restricted ECR publication role.
+steps:
+  - label: ":docker: BYOG image"
+    key: byog-image
+    agents:
+      queue: "${BYOG_BUILD_QUEUE}"
+    timeout_in_minutes: 600
+    commands:
+      - bash tools/byog/build-image.sh
+    artifact_paths:
+      - byog-image.json
