@@ -1,7 +1,6 @@
 model_name: "amd/DeepSeek-V4-Flash-NVFP4"
 accuracy_threshold: 0.92
 num_questions: 1319
-num_fewshot: 8
 startup_max_wait_seconds: 1800
 server_args: >-
   --tensor-parallel-size 8

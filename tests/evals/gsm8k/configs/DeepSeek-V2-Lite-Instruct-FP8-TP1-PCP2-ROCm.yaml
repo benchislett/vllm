@@ -1,7 +1,6 @@
 model_name: "RedHatAI/DeepSeek-Coder-V2-Lite-Instruct-FP8"
 accuracy_threshold: 0.72
 num_questions: 1319
-num_fewshot: 5
 rocm_request_timeout_seconds: 1800
 # Dense MLA PCP on MI355; DP1/DCP1, eager execution, and Triton MoE.
 server_args: >-

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
+uv pip install --system "evalscope[openai_mrcr]==1.14.0"
+
 # args: [THRESHOLD] [NUM_QUESTIONS] [START_PORT]
 THRESHOLD=${1:-0.25}
 NUM_Q=${2:-1319}
@@ -64,9 +66,12 @@ for BACK in "${BACKENDS[@]}"; do
 
   TAG=$(echo "$MODEL" | tr '/: \\n' '_____')
   OUT="${OUT_DIR}/${TAG}_${BACK}.json"
-  python3 tests/evals/gsm8k/gsm8k_eval.py --host http://127.0.0.1 --port "$PORT" --num-questions "${NUM_Q}" --save-results "${OUT}"
+  vllm eval gsm8k --model "$MODEL" --api-url "http://127.0.0.1:${PORT}/v1" \
+    --limit "${NUM_Q}" --dataset-hub huggingface \
+    --generation-config '{"max_tokens":256,"temperature":0,"extra_body":{"chat_template_kwargs":{"enable_thinking":false}}}' \
+    --work-dir "$(mktemp -d "${OUT_DIR}/gsm8k-XXXXXX")" --save-results "${OUT}"
   python3 - <<PY
-import json; acc=json.load(open('${OUT}'))['accuracy']
+import json; acc=json.load(open('${OUT}'))['metrics']['gsm8k']['score']
 print(f"${MODEL} ${BACK}: accuracy {acc:.3f}")
 assert acc >= ${THRESHOLD}, f"${MODEL} ${BACK} accuracy {acc}"
 PY

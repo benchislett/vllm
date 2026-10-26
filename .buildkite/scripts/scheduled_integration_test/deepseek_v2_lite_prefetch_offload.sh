@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euxo pipefail
+
+uv pip install --system "evalscope[openai_mrcr]==1.14.0"
 # Nightly e2e test for prefetch offloading with a MoE model.
 # Runs DeepSeek-V2-Lite with prefetch offloading of MoE expert weights
 # and validates GSM8K accuracy matches baseline (no offloading).
@@ -23,7 +25,7 @@ wait_for_server() {
     done'
 }
 
-MODEL="deepseek-ai/DeepSeek-V2-Lite"
+MODEL="deepseek-ai/DeepSeek-V2-Lite-Chat"
 
 # ── Build optional vllm serve flags ─────────────────────────────────────
 
@@ -67,9 +69,12 @@ wait_for_server "$PORT"
 
 TAG=$(echo "$MODEL" | tr '/: \\n' '_____')
 OUT="${OUT_DIR}/${TAG}_prefetch_offload.json"
-python3 tests/evals/gsm8k/gsm8k_eval.py --host http://127.0.0.1 --port "$PORT" --num-questions "${NUM_Q}" --save-results "${OUT}"
+vllm eval gsm8k --model "$MODEL" --api-url "http://127.0.0.1:${PORT}/v1" \
+    --limit "${NUM_Q}" --dataset-hub huggingface \
+    --generation-config '{"max_tokens":256,"temperature":0,"extra_body":{"chat_template_kwargs":{"enable_thinking":false}}}' \
+    --work-dir "$(mktemp -d "${OUT_DIR}/gsm8k-XXXXXX")" --save-results "${OUT}"
 python3 - <<PY
-import json; acc=json.load(open('${OUT}'))['accuracy']
+import json; acc=json.load(open('${OUT}'))['metrics']['gsm8k']['score']
 print(f"${MODEL} prefetch_offload: accuracy {acc:.3f}")
 assert acc >= ${THRESHOLD}, f"${MODEL} prefetch_offload accuracy {acc}"
 PY

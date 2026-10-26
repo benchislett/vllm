@@ -10,8 +10,12 @@ steps:
   source_file_dependencies:
   - csrc/
   - vllm/model_executor/layers/quantization
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   autorun_on_main: true
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-small.yaml
   mirror:
     amd:
@@ -30,6 +34,9 @@ steps:
       - vllm/v1/attention/selector.py
       - vllm/_aiter_ops.py
       - vllm/platforms/rocm.py
+      - tests/evals/gsm8k/gsm8k_eval.py
+      - tests/evals/utils.py
+      - vllm/evals/
 
 - label: ":amd: (MI300) LM Eval Small Models Harness"
   key: amd-lm-eval-small-models-harness
@@ -64,8 +71,11 @@ steps:
   - vllm/sampling_params.py
   - vllm/v1/watermarking/
   - vllm/v1/worker/gpu/
+  - tests/evals/utils.py
+  - vllm/evals/
   autorun_on_main: true
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-watermark.txt
   mirror:
     amd:
@@ -85,9 +95,12 @@ steps:
       - vllm/v1/watermarking/
       - vllm/v1/worker/gpu/
       - vllm/platforms/rocm.py
+      - tests/evals/utils.py
+      - vllm/evals/
       env:
         VLLM_WORKER_MULTIPROC_METHOD: "spawn"
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-watermark.txt
 
 # - label: LM Eval Large Models (4xA100)
@@ -148,7 +161,11 @@ steps:
   source_file_dependencies:
   - csrc/
   - vllm/model_executor/layers/quantization
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-blackwell.txt
   mirror:
     amd:
@@ -173,7 +190,10 @@ steps:
       - vllm/v1/attention/selector.py
       - vllm/_aiter_ops.py
       - vllm/platforms/rocm.py
+      - tests/evals/utils.py
+      - vllm/evals/
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-small.yaml
 
 - label: ":nvidia: (B200) [Nightly] LM Eval Small Models Distributed"
@@ -185,8 +205,12 @@ steps:
   source_file_dependencies:
   - csrc/
   - vllm/model_executor/layers/quantization
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   autorun_on_main: true
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-small-tp.yaml
   mirror:
     amd:
@@ -213,7 +237,10 @@ steps:
       - tests/utils.py
       - vllm/distributed/
       - vllm/v1/attention/ops/
+      - tests/evals/utils.py
+      - vllm/evals/
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-mi3xx-fp8-and-mixed.txt
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-small-tp.yaml
 
@@ -232,7 +259,10 @@ steps:
   - vllm/model_executor/layers/attention/sparse_mla_attention.py
   - vllm/v1/worker/gpu/
   - csrc/hisparse_kernels.cu
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-hisparse.txt
 
 - label: ":nvidia: (B200) [Nightly] LM Eval PCP"
@@ -259,8 +289,12 @@ steps:
   - vllm/v1/attention/backends/mla/indexer.py
   - vllm/v1/worker/gpu/model_runner.py
   - vllm/v1/worker/gpu/pcp_manager.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   autorun_on_main: true
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-pcp.txt
 
 - label: ":nvidia: (H100) LM Eval Watermark Feature Combination"
@@ -284,8 +318,11 @@ steps:
   - vllm/model_executor/warmup/
   - vllm/v1/watermarking/
   - vllm/v1/worker/gpu/
+  - tests/evals/utils.py
+  - vllm/evals/
   autorun_on_main: true
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-watermark-dspark-tp2.txt
   - pytest -s -v watermarking/test_compatibility.py watermarking/test_engine_compatibility.py watermarking/test_parallel_compatibility.py
   mirror:
@@ -311,9 +348,12 @@ steps:
       - vllm/v1/watermarking/
       - vllm/v1/worker/gpu/
       - vllm/platforms/rocm.py
+      - tests/evals/utils.py
+      - vllm/evals/
       env:
         VLLM_WORKER_MULTIPROC_METHOD: "spawn"
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-watermark-dspark-tp2.txt
 
 - label: ":nvidia: (B200) [Nightly] LM Eval Spec Decode"
@@ -340,7 +380,11 @@ steps:
   - vllm/v1/worker/gpu/spec_decode/dspark/
   - vllm/v1/worker/gpu/spec_decode/rejection_sampler.py
   - vllm/v1/worker/gpu/spec_decode/speculator.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - PYTHONPATH=/vllm-workspace pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-spec-decode.txt
   mirror:
     amd:
@@ -384,7 +428,10 @@ steps:
       - tests/evals/gsm8k/
       - tests/utils.py
       - vllm/distributed/
+      - tests/evals/utils.py
+      - vllm/evals/
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-spec-decode-rocm.txt
 
 - label: ":nvidia: (B200) [Nightly] LM Eval Large Models EP"
@@ -397,7 +444,11 @@ steps:
   source_file_dependencies:
   - csrc/
   - vllm/model_executor/layers/quantization
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-blackwell-ep.txt
   mirror:
     amd:
@@ -438,7 +489,10 @@ steps:
       - vllm/v1/worker/
       - vllm/_aiter_ops.py
       - vllm/platforms/rocm.py
+      - tests/evals/utils.py
+      - vllm/evals/
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - export VLLM_WORKER_MULTIPROC_METHOD=spawn
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-blackwell-ep-mi355.txt
 
@@ -454,7 +508,11 @@ steps:
   - vllm/model_executor/models/qwen3_next.py
   - vllm/model_executor/models/qwen3_next_mtp.py
   - vllm/third_party/flash_linear_attention/ops/
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-qwen35-blackwell.txt
   mirror:
     amd:
@@ -487,7 +545,11 @@ steps:
       - tests/evals/gsm8k/test_gsm8k_correctness.py
       - vllm/_aiter_ops.py
       - vllm/platforms/rocm.py
+      - tests/evals/gsm8k/gsm8k_eval.py
+      - tests/evals/utils.py
+      - vllm/evals/
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-qwen35-mi355.txt
 
 - label: ":nvidia: (H200) [Nightly] LM Eval DeepSeek R1 TP"
@@ -497,6 +559,7 @@ steps:
   optional: true
   num_devices: 8
   commands:
+    - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
     - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-h200-deepseek-r1-tp.txt
   mirror:
     amd:
@@ -530,7 +593,10 @@ steps:
       - vllm/_aiter_ops.py
       - vllm/platforms/rocm.py
       - vllm/model_executor/layers/sparse_attn_indexer.py
+      - tests/evals/utils.py
+      - vllm/evals/
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - export VLLM_WORKER_MULTIPROC_METHOD=spawn
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-mi355-deepseek-r1-tp.txt
 
@@ -541,6 +607,7 @@ steps:
   optional: true
   num_devices: 8
   commands:
+    - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
     - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-h200-deepseek-r1-dp.txt
   mirror:
     amd:
@@ -574,7 +641,10 @@ steps:
       - vllm/_aiter_ops.py
       - vllm/platforms/rocm.py
       - vllm/model_executor/layers/sparse_attn_indexer.py
+      - tests/evals/utils.py
+      - vllm/evals/
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - export VLLM_WORKER_MULTIPROC_METHOD=spawn
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-mi355-deepseek-r1-dp.txt
 
@@ -585,6 +655,7 @@ steps:
   optional: true
   num_devices: 8
   commands:
+    - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
     - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-h200-deepseek-v32-tp.txt
   mirror:
     amd:
@@ -618,7 +689,10 @@ steps:
       - vllm/_aiter_ops.py
       - vllm/platforms/rocm.py
       - vllm/model_executor/layers/sparse_attn_indexer.py
+      - tests/evals/utils.py
+      - vllm/evals/
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - export VLLM_WORKER_MULTIPROC_METHOD=spawn
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-mi355-deepseek-v32-tp.txt
 
@@ -629,6 +703,7 @@ steps:
   optional: true
   num_devices: 8
   commands:
+    - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
     - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-h200-deepseek-v32-dp.txt
   mirror:
     amd:
@@ -662,7 +737,10 @@ steps:
       - vllm/_aiter_ops.py
       - vllm/platforms/rocm.py
       - vllm/model_executor/layers/sparse_attn_indexer.py
+      - tests/evals/utils.py
+      - vllm/evals/
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - export VLLM_WORKER_MULTIPROC_METHOD=spawn
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-mi355-deepseek-v32-dp.txt
 
@@ -673,6 +751,7 @@ steps:
   optional: true
   num_devices: 8
   commands:
+    - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
     - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-h200-nemotron-3-super.txt
   mirror:
     amd:
@@ -706,7 +785,10 @@ steps:
       - vllm/_aiter_ops.py
       - vllm/platforms/rocm.py
       - vllm/model_executor/layers/mamba/
+      - tests/evals/utils.py
+      - vllm/evals/
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - export VLLM_WORKER_MULTIPROC_METHOD=spawn
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-mi355-nemotron-3-super.txt
 
@@ -719,11 +801,15 @@ steps:
   depends_on:
   - image-build-amd
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export VLLM_WORKER_MULTIPROC_METHOD=spawn
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-gfx950-large.txt
   source_file_dependencies:
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
 
 - label: ":nvidia: (H100) [Nightly] MoE Refactor Integration TEMPORARY"
   key: moe-refactor-integration-test-h100-temporary
@@ -735,6 +821,7 @@ steps:
     # Timing-balanced static split of the former config-h100.txt (measured on
     # build 83851): shards ~12.4/13.6/12.4/14.5m of eval time. New configs must
     # be added to exactly one config-h100-shard-*.txt.
+    - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
     - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/moe-refactor/config-h100-shard-$$BUILDKITE_PARALLEL_JOB.txt
   mirror:
     amd:
@@ -752,9 +839,12 @@ steps:
       - vllm/model_executor/layers/fused_moe/
       - vllm/model_executor/layers/quantization/
       - vllm/_aiter_ops.py
+      - tests/evals/utils.py
+      - vllm/evals/
       env:
         VLLM_WORKER_MULTIPROC_METHOD: "spawn"
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/moe-refactor/config-rocm-shard-$$BUILDKITE_PARALLEL_JOB.txt
 
 - label: ":nvidia: (B200) [Nightly] MoE Refactor Integration TEMPORARY Shard %N"
@@ -764,6 +854,7 @@ steps:
   num_devices: 2
   parallelism: 4
   commands:
+    - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
     - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/moe-refactor/config-b200-shard-$$BUILDKITE_PARALLEL_JOB.txt
   mirror:
     amd:
@@ -787,9 +878,12 @@ steps:
       - vllm/distributed/
       - vllm/_aiter_ops.py
       - vllm/platforms/rocm.py
+      - tests/evals/utils.py
+      - vllm/evals/
       env:
         VLLM_WORKER_MULTIPROC_METHOD: "spawn"
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/moe-refactor/config-b200.txt -k "Llama-4-Scout-BF16-triton or Mixtral-8x7B-BF16-triton"
 
 - label: ":nvidia: (B200) [Nightly] MoE Refactor DP Integration TEMPORARY"
@@ -799,6 +893,7 @@ steps:
   optional: true
   num_devices: 2
   commands:
+    - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
     - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/moe-refactor-dp-ep/config-b200.txt
   mirror:
     amd:
@@ -822,9 +917,12 @@ steps:
       - vllm/distributed/
       - vllm/_aiter_ops.py
       - vllm/platforms/rocm.py
+      - tests/evals/utils.py
+      - vllm/evals/
       env:
         VLLM_WORKER_MULTIPROC_METHOD: "spawn"
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/moe-refactor-dp-ep/config-b200.txt -k "Qwen3-30B-A3B-BF16-triton"
 
 - label: ":nvidia: (L4) [Nightly] LM Eval Humming TEMPORARY"
@@ -843,7 +941,11 @@ steps:
   - vllm/model_executor/layers/fused_moe/experts/fused_humming_moe.py
   - vllm/model_executor/layers/fused_moe/oracle/
   - vllm/model_executor/kernels/linear/
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/humming/config-l4.txt
 
 - label: ":nvidia: (A100) [Nightly] LM Eval Humming Default TEMPORARY Shard %N"
@@ -859,7 +961,11 @@ steps:
   - vllm/model_executor/layers/fused_moe/experts/fused_humming_moe.py
   - vllm/model_executor/layers/fused_moe/oracle/
   - vllm/model_executor/kernels/linear/
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/humming/config-a100-shard-$$BUILDKITE_PARALLEL_JOB.txt
 
 - label: ":nvidia: (A100) [Nightly] LM Eval Humming Activation INT8 TEMPORARY Shard %N"
@@ -875,7 +981,11 @@ steps:
   - vllm/model_executor/layers/fused_moe/experts/fused_humming_moe.py
   - vllm/model_executor/layers/fused_moe/oracle/
   - vllm/model_executor/kernels/linear/
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/humming/config-a100-act-int8-shard-$$BUILDKITE_PARALLEL_JOB.txt
 
 - label: ":nvidia: (H100) [Nightly] LM Eval Humming Default TEMPORARY Shard %N"
@@ -891,7 +1001,11 @@ steps:
   - vllm/model_executor/layers/fused_moe/experts/fused_humming_moe.py
   - vllm/model_executor/layers/fused_moe/oracle/
   - vllm/model_executor/kernels/linear/
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/humming/config-h100-shard-$$BUILDKITE_PARALLEL_JOB.txt
 
 - label: ":nvidia: (H100) [Nightly] LM Eval Humming Activation FP8/INT8 TEMPORARY"
@@ -906,7 +1020,11 @@ steps:
   - vllm/model_executor/layers/fused_moe/experts/fused_humming_moe.py
   - vllm/model_executor/layers/fused_moe/oracle/
   - vllm/model_executor/kernels/linear/
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/humming/config-act-fp8.txt
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/humming/config-act-int8.txt
 
@@ -927,7 +1045,11 @@ steps:
   - vllm/model_executor/kernels/linear/
   - vllm/distributed/
   - csrc/moe/
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/humming/config-deepep.txt
 
 - label: ":nvidia: (B200) [Nightly] LM Eval Humming Default TEMPORARY"
@@ -942,7 +1064,11 @@ steps:
   - vllm/model_executor/layers/fused_moe/experts/fused_humming_moe.py
   - vllm/model_executor/layers/fused_moe/oracle/
   - vllm/model_executor/kernels/linear/
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/humming/config.txt
 
 - label: ":nvidia: (B200) [Nightly] LM Eval Humming Activation FP8/INT8 TEMPORARY"
@@ -957,7 +1083,11 @@ steps:
   - vllm/model_executor/layers/fused_moe/experts/fused_humming_moe.py
   - vllm/model_executor/layers/fused_moe/oracle/
   - vllm/model_executor/kernels/linear/
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/humming/config-act-fp8.txt
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/humming/config-act-int8.txt
 
@@ -970,7 +1100,11 @@ steps:
   - vllm/v1/attention/backends/turboquant_attn.py
   - vllm/v1/attention/ops/triton_turboquant_decode.py
   - vllm/v1/attention/ops/triton_turboquant_store.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/models-turboquant-k8v4.txt
   mirror:
     amd:
@@ -998,7 +1132,10 @@ steps:
       - vllm/v1/attention/ops/flydsl_kernels/
       - vllm/v1/attention/ops/turboquant_soa/
       - vllm/platforms/rocm.py
+      - tests/evals/utils.py
+      - vllm/evals/
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/models-turboquant-k8v4-rocm.txt
 
 - label: ":nvidia: (H200 MIG 18GB) LM Eval TurboQuant t4nc"
@@ -1010,7 +1147,11 @@ steps:
   - vllm/v1/attention/backends/turboquant_attn.py
   - vllm/v1/attention/ops/triton_turboquant_decode.py
   - vllm/v1/attention/ops/triton_turboquant_store.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/models-turboquant-t4nc.txt
   mirror:
     amd:
@@ -1038,7 +1179,10 @@ steps:
       - vllm/v1/attention/ops/flydsl_kernels/
       - vllm/v1/attention/ops/turboquant_soa/
       - vllm/platforms/rocm.py
+      - tests/evals/utils.py
+      - vllm/evals/
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/models-turboquant-t4nc-rocm.txt
 
 - label: ":nvidia: (H200 MIG 18GB) LM Eval TurboQuant k3v4nc"
@@ -1050,7 +1194,11 @@ steps:
   - vllm/v1/attention/backends/turboquant_attn.py
   - vllm/v1/attention/ops/triton_turboquant_decode.py
   - vllm/v1/attention/ops/triton_turboquant_store.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/models-turboquant-k3v4nc.txt
   mirror:
     amd:
@@ -1078,7 +1226,10 @@ steps:
       - vllm/v1/attention/ops/flydsl_kernels/
       - vllm/v1/attention/ops/turboquant_soa/
       - vllm/platforms/rocm.py
+      - tests/evals/utils.py
+      - vllm/evals/
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/models-turboquant-k3v4nc-rocm.txt
 
 - label: ":nvidia: (H200 MIG 18GB) LM Eval TurboQuant t3nc"
@@ -1090,7 +1241,11 @@ steps:
   - vllm/v1/attention/backends/turboquant_attn.py
   - vllm/v1/attention/ops/triton_turboquant_decode.py
   - vllm/v1/attention/ops/triton_turboquant_store.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/models-turboquant-t3nc.txt
   mirror:
     amd:
@@ -1118,7 +1273,10 @@ steps:
       - vllm/v1/attention/ops/flydsl_kernels/
       - vllm/v1/attention/ops/turboquant_soa/
       - vllm/platforms/rocm.py
+      - tests/evals/utils.py
+      - vllm/evals/
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/models-turboquant-t3nc-rocm.txt
 
 - label: ":nvidia: (H100) [Nightly] GPQA Eval (GPT-OSS)"
@@ -1324,7 +1482,11 @@ steps:
   - vllm/v1/kv_offload/
   - vllm/v1/simple_kv_offload/
   - tests/evals/gsm8k/test_gsm8k_offloading.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_offloading.py -k "nemotron-h-8b or gemma-4-e4b-it"
   mirror:
     amd:
@@ -1342,6 +1504,9 @@ steps:
       - vllm/v1/simple_kv_offload/
       - tests/evals/gsm8k/test_gsm8k_offloading.py
       - vllm/platforms/rocm.py
+      - tests/evals/gsm8k/gsm8k_eval.py
+      - tests/evals/utils.py
+      - vllm/evals/
 
 - label: ":nvidia: (H100) LM Eval KV-Offload Medium"
   key: kv-offload-medium
@@ -1354,7 +1519,11 @@ steps:
   - vllm/v1/kv_offload/
   - vllm/v1/simple_kv_offload/
   - tests/evals/gsm8k/test_gsm8k_offloading.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_offloading.py -k "qwen3.5-35b or deepseek-v2-lite"
   mirror:
     amd:
@@ -1372,6 +1541,9 @@ steps:
       - vllm/v1/simple_kv_offload/
       - tests/evals/gsm8k/test_gsm8k_offloading.py
       - vllm/platforms/rocm.py
+      - tests/evals/gsm8k/gsm8k_eval.py
+      - tests/evals/utils.py
+      - vllm/evals/
 
 - label: ":nvidia: (H100) [Nightly] LM Eval KV-Offload Large"
   key: kv-offload-large
@@ -1386,7 +1558,11 @@ steps:
   - vllm/v1/kv_offload/
   - vllm/v1/simple_kv_offload/
   - tests/evals/gsm8k/test_gsm8k_offloading.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_offloading.py -k "deepseek-v4-flash"
   mirror:
     amd:
@@ -1404,7 +1580,11 @@ steps:
       - vllm/v1/simple_kv_offload/
       - tests/evals/gsm8k/test_gsm8k_offloading.py
       - vllm/platforms/rocm.py
+      - tests/evals/gsm8k/gsm8k_eval.py
+      - tests/evals/utils.py
+      - vllm/evals/
       commands:
+      - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
       - VLLM_ROCM_USE_AITER=1 pytest -s -v evals/gsm8k/test_gsm8k_offloading.py -k "deepseek-v4-flash"
 
 - label: ":nvidia: (H200 MIG 35GB) MRCR Eval Small Models"

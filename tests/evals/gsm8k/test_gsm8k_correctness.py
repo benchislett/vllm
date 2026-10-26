@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
-"""GSM8K evaluation using vLLM server and isolated GSM8K script.
-Replacement for lm-eval-harness with better performance and control.
+"""GSM8K evaluation through the standard chat-templated EvalScope workflow.
 
 Usage:
 pytest -s -v tests/evals/gsm8k/test_gsm8k_correctness.py \
@@ -14,55 +13,13 @@ import pytest
 import requests
 import yaml
 
+from tests.evals.utils import run_evaluation
 from tests.utils import RemoteOpenAIServer
 from vllm.platforms import current_platform
 
-from .gsm8k_eval import evaluate_gsm8k
+from .gsm8k_eval import gsm8k_task
 
 DEFAULT_STARTUP_MAX_WAIT_SECONDS = 1200
-
-
-def run_gsm8k_eval(eval_config: dict, server_url: str) -> dict:
-    """Run GSM8K evaluation using our isolated script."""
-    # Extract host and port from server URL
-    if "://" in server_url:
-        server_url = server_url.split("://")[1]
-
-    host_port = server_url.split("/")[0]  # Remove path if present
-    if ":" in host_port:
-        host, p = host_port.split(":")
-        port = int(p)
-    else:
-        host = host_port
-        port = 8000
-
-    # Add http:// prefix if not present
-    if not host.startswith("http"):
-        host = f"http://{host}"
-
-    # Run GSM8K evaluation
-    request_timeout_seconds = eval_config.get("request_timeout_seconds", 600)
-    if current_platform.is_rocm():
-        request_timeout_seconds = eval_config.get(
-            "rocm_request_timeout_seconds", request_timeout_seconds
-        )
-
-    results = evaluate_gsm8k(
-        num_questions=eval_config["num_questions"],
-        num_shots=eval_config["num_fewshot"],
-        max_tokens=eval_config.get("max_tokens", 256),
-        model=eval_config["model_name"],
-        use_chat_completions=eval_config.get("use_chat_completions", False),
-        host=host,
-        port=port,
-        temperature=eval_config.get("temperature", 0.0),
-        seed=eval_config.get("seed", 42),
-        request_timeout_seconds=request_timeout_seconds,
-        gen_prefix=eval_config.get("gen_prefix", ""),
-        max_concurrency=eval_config.get("max_concurrency"),
-    )
-
-    return results
 
 
 def get_acceptance_length(server_url: str) -> float:
@@ -87,7 +44,7 @@ def get_acceptance_length(server_url: str) -> float:
     return 1.0 + num_accepted / num_drafts
 
 
-def test_gsm8k_correctness(config_filename):
+def test_gsm8k_correctness(config_filename, tmp_path):
     """Test GSM8K correctness for a given model configuration."""
     eval_config = yaml.safe_load(config_filename.read_text(encoding="utf-8"))
 
@@ -156,8 +113,8 @@ def test_gsm8k_correctness(config_filename):
 
     print(f"Starting GSM8K evaluation for model: {eval_config['model_name']}")
     print(f"Expected metric threshold: {eval_config['accuracy_threshold']}")
-    print(f"Number of questions: {eval_config['num_questions']}")
-    print(f"Number of few-shot examples: {eval_config['num_fewshot']}")
+    print(f"Number of questions: {eval_config.get('num_questions', 1319)}")
+    print("GSM8K protocol: EvalScope four-shot, chat template, boxed-answer scoring")
     request_timeout_seconds = eval_config.get("request_timeout_seconds", 600)
     if current_platform.is_rocm():
         request_timeout_seconds = eval_config.get(
@@ -188,9 +145,14 @@ def test_gsm8k_correctness(config_filename):
             print(f"  {method}: {results}")
             assert results and not any(results), f"{method} failed: {results}"
 
-        results = run_gsm8k_eval(eval_config, server_url)
-
-        measured_metric = results["accuracy"]
+        task = gsm8k_task(eval_config)
+        if current_platform.is_rocm():
+            task["generation_config"]["timeout"] = eval_config.get(
+                "rocm_request_timeout_seconds", task["generation_config"]["timeout"]
+            )
+        report = run_evaluation(task, remote_server.url_for("v1"), tmp_path)
+        result = report["metrics"]["gsm8k"]
+        measured_metric = result["score"]
         expected_metric = eval_config["accuracy_threshold"]
         tol = eval_config.get("tolerance", 0.08)
 
@@ -198,10 +160,7 @@ def test_gsm8k_correctness(config_filename):
         print(f"  Measured metric: {measured_metric:.4f}")
         print(f"  Expected metric: {expected_metric:.4f}")
         print(f"  Tolerance: {tol:.4f}")
-        print(f"  Questions: {results['num_questions']}")
-        print(f"  Invalid rate: {results['invalid_rate']:.3f}")
-        print(f"  Latency: {results['latency']:.1f}s")
-        print(f"  QPS: {results['questions_per_second']:.1f}")
+        print(f"  Questions: {result['num']}")
 
         assert measured_metric >= expected_metric - tol, (
             f"GSM8K metric too low: {measured_metric:.4f} < "
