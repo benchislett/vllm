@@ -116,6 +116,9 @@ impl RangeRatio {
 /// Validated benchmark configuration derived from CLI args.
 #[derive(Debug, Clone)]
 pub struct BenchConfig {
+    pub workload: Option<crate::workloads::Workload>,
+    pub report_format: crate::workloads::ReportFormat,
+    pub report_settings: Option<serde_json::Value>,
     pub backend: BackendKind,
     pub base_url: String,
     pub api_url: String,
@@ -225,6 +228,33 @@ pub struct BenchConfig {
 
 impl BenchConfig {
     pub fn from_args(args: &BenchServeArgs) -> Result<Self> {
+        let mut args = args.clone();
+        if let Some(workload) = args.workload {
+            workload.apply(&mut args)?;
+        }
+        if args.report_format == crate::workloads::ReportFormat::Byog {
+            args.save_result = true;
+            args.save_detailed = true;
+        }
+        let report_settings = if args.report_format == crate::workloads::ReportFormat::Byog {
+            let mut safe_args = args.clone();
+            if let Some(headers) = &mut safe_args.headers {
+                for header in headers {
+                    *header = format!(
+                        "{}=<redacted>",
+                        header.split('=').next().unwrap_or("header")
+                    );
+                }
+            }
+            let mut settings = serde_json::to_value(safe_args)?;
+            if args.request_rate.is_infinite() {
+                settings["request_rate"] = serde_json::json!("inf");
+            }
+            Some(settings)
+        } else {
+            None
+        };
+        let args = &args;
         if args.burstiness <= 0.0 {
             return Err(BenchError::Config("Burstiness must be positive".into()));
         }
@@ -741,6 +771,9 @@ impl BenchConfig {
         }
 
         Ok(BenchConfig {
+            workload: args.workload,
+            report_format: args.report_format,
+            report_settings,
             backend: args.backend,
             base_url,
             api_url,

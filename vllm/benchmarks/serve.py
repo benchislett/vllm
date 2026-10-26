@@ -52,10 +52,17 @@ from vllm.benchmarks.lib.endpoint_request_func import (
     async_request_profile,
 )
 from vllm.benchmarks.lib.ready_checker import wait_for_endpoint
+from vllm.benchmarks.lib.report import make_report
 from vllm.benchmarks.lib.utils import (
     convert_to_pytorch_benchmark_format,
     redact_sensitive_namespace,
     write_to_json,
+)
+from vllm.benchmarks.workloads import (
+    add_workload_args,
+    prefix_cache_snapshot,
+    resolve_workload,
+    workload_metadata,
 )
 from vllm.tokenizers import TokenizerLike, get_tokenizer
 from vllm.utils.argparse_utils import FlexibleArgumentParser
@@ -2047,12 +2054,26 @@ def add_cli_args(parser: FlexibleArgumentParser):
         "prompt tokens, output tokens, and combined token distributions.",
     )
 
+    parser.add_argument(
+        "--report-format",
+        choices=["legacy", "byog"],
+        default="legacy",
+        help="BYOG writes a versioned report with raw records; implies --save-result.",
+    )
+    add_workload_args(parser)
+
 
 def main(args: argparse.Namespace) -> dict[str, Any]:
     return asyncio.run(main_async(args))
 
 
 async def main_async(args: argparse.Namespace) -> dict[str, Any]:
+    args.report_format = getattr(args, "report_format", "legacy")
+    args.workload = getattr(args, "workload", None)
+    resolve_workload(args)
+    if args.report_format == "byog":
+        args.save_result = True
+        args.save_detailed = True
     print(redact_sensitive_namespace(args, _SENSITIVE_ARG_FIELDS))
     if args.max_concurrency is not None and args.max_concurrency <= 0:
         raise ValueError("--max-concurrency must be greater than 0")
@@ -2122,6 +2143,10 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
     elif "https://" in base_url:
         # Use default SSL context for HTTPS
         ssl_context = True
+
+    cache_before = None
+    if args.workload is not None:
+        cache_before = await prefix_cache_snapshot(base_url, headers, ssl_context)
 
     # Fetch model from server if not specified
     if args.model is None:
@@ -2298,6 +2323,17 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
         probe_request_rate=args.probe_request_rate,
     )
 
+    cache_error = None
+    if cache_before is not None:
+        try:
+            cache_after = await prefix_cache_snapshot(base_url, headers, ssl_context)
+            if cache_after != cache_before:
+                cache_error = "Prefix-cache counters changed during the workload"
+        except (ValueError, aiohttp.ClientError, TimeoutError) as exc:
+            cache_error = f"Could not verify disabled prefix caching: {exc}"
+        if cache_error:
+            warnings.warn(cache_error, stacklevel=2)
+
     # Save config and results to json
     result_json: dict[str, Any] = {}
 
@@ -2443,6 +2479,54 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
             if field in benchmark_result:
                 del benchmark_result[field]
 
+    if args.workload is not None:
+        result_json["workload"] = workload_metadata(args)
+        result_json["workload"]["prefix_cache_check"] = cache_error or "passed"
+
+    report = result_json
+    if args.report_format == "byog":
+        record_fields = (
+            "input_lens",
+            "output_lens",
+            "start_times",
+            "ttfts",
+            "itls",
+            "generated_texts",
+            "errors",
+            "server_queue_times",
+            "server_ttfts",
+        )
+        settings = {
+            "model_id": model_id,
+            "tokenizer_id": tokenizer_id,
+            "workload": workload_metadata(args),
+            "client_args": {
+                key: value
+                for key, value in vars(
+                    redact_sensitive_namespace(args, _SENSITIVE_ARG_FIELDS)
+                ).items()
+                if not key.startswith("_") and not callable(value)
+            },
+        }
+        report = make_report(
+            kind="benchmark",
+            name="serve",
+            settings=settings,
+            metrics={
+                k: v for k, v in benchmark_result.items() if k not in record_fields
+            },
+            records={
+                k: benchmark_result[k] for k in record_fields if k in benchmark_result
+            },
+            status="completed"
+            if cache_error is None
+            and benchmark_result["completed"] == len(input_requests)
+            else "partial",
+        )
+
+    if args.report_format == "byog" and cache_before is not None:
+        report["records"]["prefix_cache_check"] = cache_error or "passed"
+
     # Save to file
     if args.save_result or args.append_result:
         assert file_name is not None, (
@@ -2454,7 +2538,9 @@ async def main_async(args: argparse.Namespace) -> dict[str, Any]:
             # Append a newline.
             if args.append_result and outfile.tell() != 0:
                 outfile.write("\n")
-            json.dump(result_json, outfile)
+            json.dump(report, outfile)
         save_to_pytorch_benchmark_format(args, result_json, file_name)
 
+    if cache_error:
+        raise SystemExit(1)
     return result_json

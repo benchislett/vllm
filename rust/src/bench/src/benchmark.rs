@@ -325,6 +325,12 @@ pub async fn run_benchmark(config: &BenchConfig) -> Result<serde_json::Value> {
         .build()
         .map_err(|e| BenchError::Backend(format!("Failed to build HTTP client: {e}")))?;
 
+    let cache_before = if config.workload.is_some() {
+        Some(crate::workloads::prefix_cache_snapshot(&client, config).await?)
+    } else {
+        None
+    };
+
     // Resolve model
     let (model_id, model_name) = if let Some(ref m) = config.model {
         (m.clone(), config.model_name.clone())
@@ -1182,7 +1188,7 @@ pub async fn run_benchmark(config: &BenchConfig) -> Result<serde_json::Value> {
     // Build result JSON
     let date_iso = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let dt_filename = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-    let result_json = build_result_json(
+    let mut result_json = build_result_json(
         config,
         &metrics,
         &actual_output_lens,
@@ -1191,6 +1197,29 @@ pub async fn run_benchmark(config: &BenchConfig) -> Result<serde_json::Value> {
         &date_iso,
         spec_decode_stats.as_ref(),
     );
+
+    let cache_error = if let Some(before) = cache_before {
+        match crate::workloads::prefix_cache_snapshot(&client, config).await {
+            Ok(after) if after == before => None,
+            Ok(_) => Some("Prefix-cache counters changed during the workload".to_owned()),
+            Err(error) => Some(format!(
+                "Could not verify disabled prefix caching: {}",
+                error.as_report()
+            )),
+        }
+    } else {
+        None
+    };
+    if config.workload.is_some() {
+        result_json["workload"] = crate::workloads::metadata(config);
+        result_json["workload"]["prefix_cache_check"] =
+            serde_json::json!(cache_error.as_deref().unwrap_or("passed"));
+    }
+    let report = if config.report_format == crate::workloads::ReportFormat::Byog {
+        crate::workloads::measurement(config, &result_json, cache_error.as_deref())
+    } else {
+        result_json.clone()
+    };
 
     // Save if requested
     if config.save_result || config.append_result {
@@ -1203,12 +1232,15 @@ pub async fn run_benchmark(config: &BenchConfig) -> Result<serde_json::Value> {
         }
 
         if config.append_result {
-            append_result(&result_json, &file_name)?;
+            append_result(&report, &file_name)?;
         } else {
-            save_result(&result_json, &file_name)?;
+            save_result(&report, &file_name)?;
         }
     }
 
+    if let Some(error) = cache_error {
+        return Err(BenchError::Config(error));
+    }
     Ok(result_json)
 }
 

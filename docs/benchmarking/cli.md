@@ -1566,3 +1566,72 @@ to account for the extra prompt which is the query. The token accounting to repo
 throughput numbers correctly is also adjusted.
 
 </details>
+
+## Versioned workloads and BYOG reports
+
+Both the Python and in-tree Rust `vllm bench serve` clients support versioned
+workloads. Disable server prefix caching with `--no-enable-prefix-caching`:
+
+```bash
+vllm bench serve --model MODEL --workload 8k1k-v1 \
+    --max-concurrency 64 --report-format byog \
+    --result-dir results --result-filename 8k1k-c64.json
+```
+
+### Supported Workloads
+
+#### 8k1k / 1k1k
+
+`1k1k-v1` and `8k1k-v1` generate random-token content with nominal input/output
+lengths of 1024/1024 and 8192/1024. They use seed 0, **20% length variation**
+(vLLM's symmetric 80–120% range), no shared prefix, **max(20, 10 × concurrency)** measured requests,
+one warmup request and unlimited arrival rate. Concurrency must be explicit.
+
+Presets use `openai-chat` with `/v1/chat/completions`: random content is sent
+as user messages, and **the server applies its chat template**. The template adds
+input tokens; reports retain actual token usage. This avoids benchmarking raw,
+untemplated random text. EOS is ignored and all output tokens are generated.
+
+The shapes are InferenceX-style, not equivalent official runs. At
+[InferenceX revision ad252464](https://github.com/SemiAnalysisAI/InferenceX/blob/ad252464a84237ebd8a87c5c826e6a2230494a38/inferencex-e2e/infx/bench_serving/benchmark_serving.py#L263),
+its ratio is a lower-bound multiplier: its workflow's 0.8 means 80–100%, unlike
+vLLM's symmetric ratio. Warmup here uses the existing client's repeated warmup
+request and does not reset server prefix caches.
+
+The request multiplier follows [InferenceX's fixed-sequence runner](https://github.com/SemiAnalysisAI/InferenceX/blob/80dff120d27fd6092210f4546b8faa5e6c9723ac/inferencex-e2e/infx/bench/fixed_seq.py#L101).
+The 20-request minimum reduces random-length variance at concurrency 1.
+These are fixed workloads: conflicting input/output lengths (including aliases),
+length variation, seed, shared prefix, request count, warmup count or arrival rate
+are rejected. Omit `--workload` for custom settings; the legacy defaults remain
+unchanged. Rust rejects explicit preset-owned flags even if their values match.
+
+Prefix caching **must be disabled**, including during warmup. The client reads
+`/metrics` before and after a workload: every `vllm:cache_config_info` must report
+`enable_prefix_caching="False"`, and local/external hit counters must not change.
+A zero hit rate by itself is not evidence that caching is disabled. Missing
+metrics or enabled caching rejects the run before generation; unverifiable
+metrics or changed counters afterward produces a partial report and nonzero exit.
+Expose `/metrics` on the same server origin and avoid unrelated concurrent traffic.
+
+### BYOG reports
+
+`--report-format byog` implies `--save-result --save-detailed` and writes a
+`byog.measurement/v1` envelope to the normal result path. It contains client
+version, resolved settings and their SHA256, metrics with existing unit-bearing
+names, per-request arrays, and completion status (`completed` or `partial`).
+Non-finite values are normalized to strings such as `"inf"` before serialization.
+`--append-result` writes one report per line. The Python return value and optional
+PyTorch-format sidecar retain the legacy result structure.
+
+Reports preserve per-request content, so review them before sharing. Custom HTTP
+headers are redacted. Server identity, image digest, hardware and effective
+configuration remain unknown (`server: null`); a remote client cannot verify
+them. A BYOG runner supplies provenance when assembling its run bundle. The
+settings hash identifies client settings, not full comparability or authenticity.
+Report generation does not certify correctness, publish results, or update a PR.
+
+Rust supports these flags through `VLLM_USE_RUST_BENCH=1` or the standalone
+`vllm-bench` binary. Rust BYOG reports support single-run mode; combined sweeps,
+multi-run aggregation and multi-turn mode are rejected. The report records the
+client implementation. The two clients use different RNG/tokenizer internals,
+so matching workload settings do not promise identical generated prompts.

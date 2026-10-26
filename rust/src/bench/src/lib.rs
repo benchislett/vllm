@@ -19,6 +19,7 @@ mod ready_checker;
 mod sweep;
 mod tiktoken;
 mod tokenizer;
+mod workloads;
 
 use anyhow::Context;
 
