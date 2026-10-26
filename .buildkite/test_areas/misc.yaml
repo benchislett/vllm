@@ -949,7 +949,11 @@ steps:
   source_file_dependencies:
   - vllm/v1/spec_decode/
   - tests/v1/spec_decode/test_acceptance_length.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+    - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
     - export VLLM_ALLOW_INSECURE_SERIALIZATION=1
     - pytest -v -s v1/spec_decode/test_acceptance_length.py -m slow_test
   mirror:
@@ -965,3 +969,6 @@ steps:
       - vllm/v1/spec_decode/
       - tests/v1/spec_decode/test_acceptance_length.py
       - vllm/platforms/rocm.py
+      - tests/evals/gsm8k/gsm8k_eval.py
+      - tests/evals/utils.py
+      - vllm/evals/

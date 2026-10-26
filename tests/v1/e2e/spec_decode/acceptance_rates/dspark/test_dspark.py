@@ -26,7 +26,6 @@ class DSparkCorrectnessConfig:
     max_num_seqs: int | None = None
     num_questions: int = 1319
     max_tokens: int = 256
-    use_chat_completions: bool = False
     chat_template_kwargs: dict[str, object] | None = None
     attention_backend: str | None = None
     gpu_memory_utilization: float = 0.92
@@ -56,7 +55,6 @@ GEMMA4_DSPARK_DEEPSPEC = DSparkCorrectnessConfig(
     reference_acceptance_len=5.0,
     max_num_seqs=32,
     num_questions=200,
-    use_chat_completions=True,
     gpu_memory_utilization=0.85,
     enforce_eager=True,
     disable_flashinfer_sampler=True,
@@ -73,7 +71,6 @@ QWEN3_6_DSPARK_SPECULATORS = DSparkCorrectnessConfig(
     num_speculative_tokens=8,
     max_num_seqs=32,
     num_questions=200,
-    use_chat_completions=True,
     chat_template_kwargs={"enable_thinking": False},
     gpu_memory_utilization=0.85,
     language_model_only=True,
@@ -130,7 +127,6 @@ def test_dspark_correctness_and_acceptance_rate(
             num_questions=config.num_questions,
             max_tokens=config.max_tokens,
             temperature=1.0,
-            use_chat_completions=config.use_chat_completions,
             chat_template_kwargs=config.chat_template_kwargs,
         )
         accuracy = results["accuracy"]

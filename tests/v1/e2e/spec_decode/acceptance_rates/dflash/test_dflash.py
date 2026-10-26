@@ -23,7 +23,6 @@ class DFlashCorrectnessConfig:
     max_model_len: int = 4096
     max_num_seqs: int = 128
     num_questions: int = 1319
-    use_chat_completions: bool = False
     enforce_eager: bool = False
     disable_flashinfer_sampler: bool = False
     language_model_only: bool = False
@@ -44,7 +43,6 @@ QWEN3_8_DFLASH2_NVFP4 = DFlashCorrectnessConfig(
     expected_acceptance_len=6.14 * 0.95,
     num_speculative_tokens=7,
     max_num_seqs=32,
-    use_chat_completions=True,
     language_model_only=True,
     chat_template_kwargs={"enable_thinking": False},
 )
@@ -58,7 +56,6 @@ LAGUNA_DFLASH_NVFP4 = DFlashCorrectnessConfig(
     max_model_len=8192,
     max_num_seqs=32,
     num_questions=200,
-    use_chat_completions=True,
     enforce_eager=True,
     disable_flashinfer_sampler=True,
 )
@@ -159,7 +156,6 @@ def test_dflash_correctness(
         results = evaluate_gsm8k_offline(
             spec_llm,
             num_questions=config.num_questions,
-            use_chat_completions=config.use_chat_completions,
             chat_template_kwargs=config.chat_template_kwargs,
         )
         accuracy = results["accuracy"]

@@ -60,9 +60,26 @@ async def test_eval_cli_multiple_adapters_and_partial_results(tmp_path):
         )
         dataset_args[name] = {
             "local_path": str(path),
-            "few_shot_num": 0,
             "subset_list": ["default"],
         }
+        if name == "gsm8k":
+            (path / "train.jsonl").write_text(
+                "".join(
+                    json.dumps(
+                        {
+                            "question": f"demonstration-{i}: 1+1?",
+                            "answer": "Two. #### 2",
+                        }
+                    )
+                    + "\n"
+                    for i in range(4)
+                )
+            )
+        else:
+            dataset_args[name]["few_shot_num"] = 0
+    from tests.evals.gsm8k.gsm8k_eval import gsm8k_task
+
+    gsm_config = gsm8k_task({"model_name": "fixture", "max_tokens": 128})
     config = tmp_path / "eval.yaml"
     config.write_text(
         json.dumps(
@@ -82,8 +99,7 @@ async def test_eval_cli_multiple_adapters_and_partial_results(tmp_path):
                 "server_args": "--tensor-parallel-size 4",
                 "startup_max_wait_seconds": 1800,
                 "generation_config": {
-                    "temperature": 0,
-                    "max_tokens": 128,
+                    **gsm_config["generation_config"],
                     "retries": 1,
                 },
                 "dataset_args": dataset_args,
@@ -158,6 +174,16 @@ async def test_eval_cli_multiple_adapters_and_partial_results(tmp_path):
         await runner.cleanup()
     report = json.loads((tmp_path / "output/result.json").read_text())
     assert report["status"] == "partial"
+    gsm_requests = [
+        p
+        for p in received
+        if "six times seven?" in str(p["messages"]) and "AIME" not in str(p["messages"])
+    ]
+    assert len(gsm_requests) == 1
+    prompt = str(gsm_requests[0]["messages"])
+    assert all(f"demonstration-{i}" in prompt for i in range(4))
+    assert "boxed" in prompt
+    assert gsm_requests[0]["chat_template_kwargs"] == {"enable_thinking": False}
     assert report["schema"] == "byog.measurement/v1"
     assert report["server"] is None
     for name in (

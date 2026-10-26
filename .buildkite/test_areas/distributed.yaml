@@ -96,8 +96,12 @@ steps:
   - tests/v1/e2e/general/test_sharded_sampling.py
   - tests/v1/e2e/spec_decode/test_sharded_sampling.py
   - tests/v1/e2e/spec_decode/utils.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
   # https://github.com/NVIDIA/nccl/issues/1838
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export NCCL_CUMEM_HOST_ENABLE=0
   - TP_SIZE=1 DP_SIZE=2 pytest -v -s v1/distributed/test_async_llm_dp.py
   - TP_SIZE=1 DP_SIZE=2 pytest -v -s v1/distributed/test_eagle_dp.py
@@ -126,6 +130,9 @@ steps:
       - tests/v1/distributed
       - tests/entrypoints/launchers/api_server/test_multi_api_servers.py
       - vllm/platforms/rocm.py
+      - tests/evals/gsm8k/gsm8k_eval.py
+      - tests/evals/utils.py
+      - vllm/evals/
 
 - label: ":nvidia: (L4) Distributed Compile + RPC"
   key: distributed-compile-rpc-tests-2-gpus

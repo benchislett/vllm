@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import torch
 
-from tests.evals.gsm8k.gsm8k_eval import _build_gsm8k_prompts, evaluate_gsm8k_offline
+from tests.evals.gsm8k.gsm8k_eval import evaluate_gsm8k_offline, gsm8k_prompts
 from vllm import LLM, SamplingParams
 from vllm.assets.base import VLLM_S3_BUCKET_URL
 from vllm.assets.image import VLM_IMAGES_DIR
@@ -61,12 +61,7 @@ def get_test_prompts(mm_enabled: bool, num_prompts: int = 100) -> list[Messages]
                 }
             ]
         )
-    prompts.extend(
-        [{"role": "user", "content": prompt}]
-        for prompt in _build_gsm8k_prompts(
-            num_questions=num_gsm8k_prompts, num_shots=5
-        )[0]
-    )
+    prompts.extend(gsm8k_prompts(num_gsm8k_prompts))
     for _ in range(num_mm_prompts):
         placeholders = [
             {
@@ -108,8 +103,8 @@ def evaluate_llm_for_gsm8k(llm: LLM, expected_accuracy_threshold: float = 0.70) 
 
     The default threshold assumes the LLM uses the same target model as the "model_name"
     fixture, with max model len == 4096. Precomputed reference value is 75% to 80%
-    on GSM8K with greedy decoding, so we check that it's above a sanity threshold of 70%
-    to verify that the model is correct.
+    under the previous GSM8K protocol. The threshold is retained pending GPU
+    revalidation of EvalScope four-shot prompts, chat templating and scoring.
     """
     if expected_accuracy_threshold <= 0.0:
         print("Skipping GSM8K evaluation")

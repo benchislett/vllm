@@ -14,9 +14,9 @@ vllm eval gsm8k gpqa_diamond aime25 --model YOUR_SERVED_MODEL \
 
 EvalScope owns dataset loading, prompts, answer extraction and scoring. Other
 registered EvalScope dataset names work through the same interface. GSM8K uses
-EvalScope's default 4-shot prompt and boxed-answer scorer; it is **not directly
-comparable** to the older five-shot, last-integer evaluator in
-`tests/evals/gsm8k/gsm8k_eval.py`, which remains unchanged. GPQA-Diamond uses the
+EvalScope's default 4-shot prompt and boxed-answer scorer. This replaces the
+former five-shot, last-integer GSM8K pathway; historical scores are **not directly
+comparable**. GPQA-Diamond uses the
 198-question diamond subset, and AIME25 uses the 2025 competition questions.
 Default dataset sources and few-shot settings come from the installed adapter.
 
@@ -128,6 +128,10 @@ content length instead of the serving model's `/tokenize` count; configure
 `max_prompt_tokens` with adequate server context headroom. EvalScope may load a
 full cached dataset snapshot rather than the previous streaming subset.
 
-The legacy `tests/evals/gsm8k/` pathway (including offloading tests) is deliberately
-unchanged. Migrating it to a standardized eval may be desirable later, but its
-raw-completions/five-shot/scoring protocol needs separate accuracy validation.
+The GSM8K correctness, offloading and elastic-EP tests also invoke this chat-based
+workflow. Their model configs use EvalScope's four-shot protocol, with configurable
+sampling/output budgets and chat-template arguments. Offline speculative-decoding
+tests use the same adapter's prompts and scorer through `LLM.chat()`; there is no
+remaining raw-completions GSM8K evaluator. Historical accuracy and acceptance
+thresholds are retained pending GPU revalidation. See the
+[GSM8K test guide](../../tests/evals/gsm8k/README.md) for migration details.

@@ -34,16 +34,16 @@ from dataclasses import dataclass, field
 import pytest
 import requests
 
+from tests.evals.utils import run_evaluation
 from tests.utils import RemoteOpenAIServer
 from vllm.platforms import current_platform
 
-from .gsm8k_eval import evaluate_gsm8k
+from .gsm8k_eval import gsm8k_task
 
 if not current_platform.is_cuda_alike():
     pytest.skip("Requires CUDA or ROCm", allow_module_level=True)
 
 NUM_QUESTIONS = 200
-NUM_FEWSHOT = 5
 
 _OFFLOAD_SYNC_TIMEOUT = 60
 
@@ -232,7 +232,7 @@ MODELS = [
 
 
 @pytest.mark.parametrize("cfg", MODELS, ids=lambda c: c.id)
-def test_gsm8k_offloading_correctness(cfg: OffloadingModelConfig):
+def test_gsm8k_offloading_correctness(cfg: OffloadingModelConfig, tmp_path):
     if "--tensor-parallel-size" in cfg.extra_server_args:
         tp_size = int(
             cfg.extra_server_args[
@@ -266,23 +266,20 @@ def test_gsm8k_offloading_correctness(cfg: OffloadingModelConfig):
         base_url = f"http://{server.host}:{server.port}"
 
         for run_idx in range(1, 3):
-            results = evaluate_gsm8k(
-                num_questions=NUM_QUESTIONS,
-                num_shots=NUM_FEWSHOT,
-                host=f"http://{server.host}",
-                port=server.port,
+            report = run_evaluation(
+                gsm8k_task({"model_name": cfg.model, "num_questions": NUM_QUESTIONS}),
+                server.url_for("v1"),
+                tmp_path / f"run-{run_idx}",
             )
-
+            accuracy = report["metrics"]["gsm8k"]["score"]
             print(
                 f"GSM8K run {run_idx}/2 + {cfg.connector} ({cfg.id}): "
-                f"accuracy={results['accuracy']:.4f}, "
-                f"invalid_rate={results['invalid_rate']:.3f}, "
-                f"latency={results['latency']:.1f}s"
+                f"accuracy={accuracy:.4f}"
             )
 
-            assert results["accuracy"] >= (cfg.accuracy_threshold - cfg.tolerance), (
+            assert accuracy >= (cfg.accuracy_threshold - cfg.tolerance), (
                 f"GSM8K run {run_idx}/2 accuracy "
-                f"{results['accuracy']:.4f} below "
+                f"{accuracy:.4f} below "
                 f"{cfg.accuracy_threshold - cfg.tolerance:.4f}"
             )
 

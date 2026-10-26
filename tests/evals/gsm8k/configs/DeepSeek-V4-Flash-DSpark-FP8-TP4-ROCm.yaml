@@ -3,7 +3,6 @@ accuracy_threshold: 0.92
 tolerance: 0.08
 min_acceptance_length: 1.2
 num_questions: 1319
-num_fewshot: 5
 startup_max_wait_seconds: 1800
 env:
   VLLM_ROCM_USE_AITER: "1"

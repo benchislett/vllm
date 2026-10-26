@@ -37,6 +37,7 @@ steps:
   - tools/recipes/
   - vllm/evals/
   - tests/evals/utils.py
+  - tests/evals/gsm8k/gsm8k_eval.py
   - setup.py
   - vllm/benchmarks/lib/report.py
   - tests/entrypoints/launchers
