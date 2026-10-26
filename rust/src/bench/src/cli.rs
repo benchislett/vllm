@@ -4,7 +4,7 @@
 use std::fmt;
 
 /// Backend type for the benchmark endpoint.
-#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum BackendKind {
     #[value(name = "vllm")]
     Vllm,
@@ -68,7 +68,7 @@ impl fmt::Display for BackendKind {
 }
 
 /// Dataset to benchmark with.
-#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum DatasetName {
     #[value(name = "random")]
     Random,
@@ -91,7 +91,7 @@ pub enum DatasetName {
 }
 
 /// Ramp-up strategy for request rate.
-#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum RampUpStrategy {
     #[value(name = "linear")]
     Linear,
@@ -100,7 +100,7 @@ pub enum RampUpStrategy {
 }
 
 /// Strategy for assigning LoRA modules to requests.
-#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum LoraAssignment {
     #[value(name = "random")]
     Random,
@@ -109,7 +109,7 @@ pub enum LoraAssignment {
 }
 
 /// SPEED-Bench dataset split/config.
-#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum SpeedBenchConfig {
     #[value(name = "qualitative")]
     Qualitative,
@@ -145,8 +145,16 @@ impl fmt::Display for SpeedBenchConfig {
 }
 
 /// High-performance benchmark client for vLLM serving endpoints.
-#[derive(clap::Args, Debug, Clone)]
+#[derive(clap::Args, Debug, Clone, serde::Serialize)]
 pub struct BenchServeArgs {
+    /// Fixed versioned workload; omit for custom workload settings.
+    #[arg(long, conflicts_with_all = ["backend", "endpoint", "dataset_name", "input_len", "output_len", "random_input_len", "random_output_len", "random_prefix_len", "random_range_ratio", "seed", "num_prompts", "num_warmups", "request_rate", "max_model_len", "random_cache_hit_fraction", "random_cache_ratio", "ramp_up_strategy", "self_timed", "multi_turn", "sweep_max_concurrency", "sweep_request_rate", "num_runs"])]
+    pub workload: Option<crate::workloads::Workload>,
+
+    /// Write a BYOG measurement envelope with raw records (single-run mode).
+    #[arg(long, default_value = "legacy", conflicts_with_all = ["multi_turn", "sweep_max_concurrency", "sweep_request_rate", "num_runs"])]
+    pub report_format: crate::workloads::ReportFormat,
+
     /// The type of backend or endpoint to use for the benchmark.
     #[arg(long, default_value = "openai")]
     pub backend: BackendKind,
