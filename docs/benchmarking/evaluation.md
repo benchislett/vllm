@@ -22,9 +22,8 @@ Default dataset sources and few-shot settings come from the installed adapter.
 
 Choose sampling, thinking settings and output budgets for the model. Use
 `generation_config.extra_body.chat_template_kwargs` for model-specific chat
-options. `--limit 32` makes a smoke test, not a reference score. EvalScope applies
-limits to source rows before adapter filtering, so a limited MRCR run can retain
-fewer rows, or none. A successful exit means a complete scored run, not that an
+options. `--limit 32` makes a smoke test, not a reference score. The MRCR presets apply limits after needle/context filtering; generic
+EvalScope datasets retain their adapter's limit behavior. A successful exit means a complete scored run, not that an
 accuracy threshold was met. No LLM judge is configured by this launcher.
 
 ## MRCR v2, eight needles
@@ -110,3 +109,25 @@ nonzero exit code; subsequent evaluations still run. Valid wrong answers do not
 make a run partial. Setup/import errors can fail before a report exists.
 Remote server provenance remains unknown. This command does not certify model
 correctness, upload results, or update PRs.
+
+## Existing accuracy tests
+
+The Qwen GSM8K/AIME25, GPT-OSS GPQA-Diamond, and MRCR tests launch this command
+through `tests/evals/utils.py`, retaining each invocation's config and artifacts.
+GPT-OSS retains eight repeats, reasoning effort and its 32k output budget. MRCR
+runs each needle count separately, balancing the sample budget and preserving
+per-needle threshold assertions; it limits samples after filtering.
+
+A small MRCR adapter subclass enables EvalScope's post-filter sample limiting;
+its prompts and scoring remain EvalScope-owned. The GPQA and MRCR adapter
+protocols change with this migration. Qwen also updates from EvalScope 1.10.0
+to the common 1.14.0 dependency. Their historical
+thresholds are retained, not recalibrated here: rerun model accuracy before
+claiming equivalence to the old baselines. MRCR now uses EvalScope's `o200k_base`
+content length instead of the serving model's `/tokenize` count; configure
+`max_prompt_tokens` with adequate server context headroom. EvalScope may load a
+full cached dataset snapshot rather than the previous streaming subset.
+
+The legacy `tests/evals/gsm8k/` pathway (including offloading tests) is deliberately
+unchanged. Migrating it to a standardized eval may be desirable later, but its
+raw-completions/five-shot/scoring protocol needs separate accuracy validation.

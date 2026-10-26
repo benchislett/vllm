@@ -1071,7 +1071,11 @@ steps:
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
   - tests/evals/mrcr/
+  - tests/evals/utils.py
+  - vllm/entrypoints/cli/eval.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/mrcr/test_mrcr_correctness.py --config-list-file=evals/mrcr/configs/models-small.txt
 
 - label: ":amd: (MI300) LM Eval Small Models Harness" # TBD
@@ -1113,7 +1117,11 @@ steps:
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
   - tests/evals/gpt_oss/
+  - tests/evals/utils.py
+  - vllm/entrypoints/cli/eval.py
+  - vllm/evals/
   commands:
+    - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
     - pytest -s -v evals/gpt_oss/test_gpqa_correctness.py --config-list-file=configs/models-gfx942.txt
 
 # TODO(akaratza): Retire this standalone ROCm coverage after
@@ -3415,9 +3423,13 @@ steps:
   - vllm/v1/attention/selector.py
   - vllm/model_executor/layers/fused_moe/
   - tests/evals/gpt_oss/
+  - tests/evals/utils.py
+  - vllm/entrypoints/cli/eval.py
+  - vllm/evals/
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
   commands:
+    - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
     - pytest -s -v evals/gpt_oss/test_gpqa_correctness.py --config-list-file=configs/models-gfx950.txt
 
 - label: ":amd: (MI355 DPX) LM Eval Small Models"
@@ -3569,13 +3581,16 @@ steps:
   source_file_dependencies:
   - csrc/gdn/
   - tests/evals/qwen4_exp/
+  - vllm/evals/
+  - tests/evals/utils.py
+  - vllm/entrypoints/cli/eval.py
   - vllm/model_executor/layers/mamba/
   - vllm/models/qwen4_exp/
   - vllm/v1/attention/backends/short_conv_attn.py
   - vllm/platforms/rocm.py
   commands:
   - export VLLM_WORKER_MULTIPROC_METHOD=spawn
-  - uv pip install --system 'evalscope==1.10.0'
+  - uv pip install --system 'evalscope[openai_mrcr]==1.14.0'
   - pytest -s -v evals/qwen4_exp/test_accuracy.py --config-list-file=configs/models-rocm.txt
 
 - label: ":amd: (MI355 DPX) LM Eval TurboQuant k8v4"

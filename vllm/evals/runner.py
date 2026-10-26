@@ -128,6 +128,15 @@ def run_cli(args: argparse.Namespace) -> None:
         if preset:
             extra = {**preset["extra_params"], **dataset_args.get("extra_params", {})}
             dataset_args["extra_params"] = extra
+        if dataset in ("openai_mrcr", "vllm_mrcr"):
+            import vllm.evals.mrcr  # noqa: F401
+
+            if dataset == "openai_mrcr":
+                current["dataset_args"]["vllm_mrcr"] = current["dataset_args"].pop(
+                    dataset
+                )
+                dataset = "vllm_mrcr"
+                current["datasets"] = [dataset]
         try:
             task = TaskConfig(**current)
             # Pydantic masks API keys in this snapshot, as in EvalScope's own files.
