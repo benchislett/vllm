@@ -4,34 +4,11 @@
 
 import shlex
 from pathlib import Path
-from typing import Any
 
 import yaml
 
+from tests.evals.utils import run_evaluation
 from tests.utils import RemoteOpenAIServer
-
-
-def run_evalscope(
-    eval_config: dict[str, Any], base_url: str, work_dir: Path
-) -> dict[str, float]:
-    from evalscope.run import run_task
-
-    reports = run_task(
-        {
-            "model": eval_config["model_name"],
-            "api_url": base_url,
-            "api_key": "EMPTY_TOKEN",
-            "datasets": list(eval_config["datasets"]),
-            "eval_batch_size": eval_config.get("eval_batch_size", 32),
-            "generation_config": eval_config["generation_config"],
-            "work_dir": str(work_dir),
-            "no_timestamp": True,
-        }
-    )
-    if not isinstance(reports, dict):
-        raise TypeError(f"Expected EvalScope reports to be a dict, got {type(reports)}")
-
-    return {dataset: float(report.score) for dataset, report in reports.items()}
 
 
 def test_qwen4_exp_accuracy(config_filename: Path, tmp_path: Path):
@@ -50,7 +27,8 @@ def test_qwen4_exp_accuracy(config_filename: Path, tmp_path: Path):
         env_dict=eval_config.get("env"),
         max_wait_seconds=eval_config.get("startup_max_wait_seconds", 1800),
     ) as remote_server:
-        scores = run_evalscope(eval_config, remote_server.url_for("v1"), tmp_path)
+        report = run_evaluation(eval_config, remote_server.url_for("v1"), tmp_path)
+        scores = {name: value["score"] for name, value in report["metrics"].items()}
 
     for dataset, metric_config in eval_config["datasets"].items():
         score = scores[dataset]

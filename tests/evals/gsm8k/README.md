@@ -1,56 +1,55 @@
 # GSM8K Accuracy Evaluation
 
-This directory contains a replacement for the lm-eval-harness GSM8K evaluation, using an isolated GSM8K script and vLLM server for better performance and control.
+GSM8K uses the standard EvalScope four-shot prompt and boxed-answer scorer.
+Server tests invoke `vllm eval gsm8k` through the shared evaluation launcher;
+the server applies the model's chat template. Offline engine tests use the same
+EvalScope adapter with `LLM.chat()`. The raw-completions/last-integer scorer and
+standalone legacy script have been removed.
 
-## Usage
-
-### Run tests with pytest (like buildkite)
+Install `pip install 'vllm[eval]'`, then run:
 
 ```bash
 pytest -s -v tests/evals/gsm8k/test_gsm8k_correctness.py \
     --config-list-file=configs/models-small.yaml
+
+# Or evaluate an already-running server:
+vllm eval gsm8k --model Qwen/Qwen2.5-1.5B-Instruct \
+    --api-url http://localhost:8000/v1 --dataset-hub huggingface \
+    --generation-config '{"max_tokens":1024,"temperature":0,"extra_body":{"chat_template_kwargs":{"enable_thinking":false}}}' \
+    --work-dir results/gsm8k
 ```
 
-### Run standalone evaluation script
-
-```bash
-# Start vLLM server first
-vllm serve Qwen/Qwen2.5-1.5B-Instruct --port 8000
-
-# Run evaluation
-python tests/evals/gsm8k/gsm8k_eval.py --port 8000
-```
-
-For chat-only models, send the prompts through `/v1/chat/completions`:
-
-```bash
-python tests/evals/gsm8k/gsm8k_eval.py --port 8000 \
-    --use-chat-completions --max-tokens 1024 \
-    --chat-template-kwargs '{"enable_thinking": false}'
-```
-
-The server applies the chat template and uses its served model, so `--model` is
-optional. In chat mode, `temperature` is sent only when `--temperature` is given,
-so the server's default sampling applies otherwise; completions mode keeps the
-default of 0. Chat mode sends no stop strings; completions mode keeps them.
-`--reasoning-effort`, `--top-p`, and `--top-k` set the matching request fields
-when given. With a reasoning parser, only the final answer `content` is scored.
-`--save-results` records the request settings used.
-
-## Configuration Format
-
-Model configs in `configs/` directory use this YAML format:
+## Model-test configuration
 
 ```yaml
-model_name: "Qwen/Qwen2.5-1.5B-Instruct"
-accuracy_threshold: 0.54  # Minimum expected accuracy
-num_questions: 1319       # Number of questions (default: full test set)
-num_fewshot: 5            # Few-shot examples from train set
-server_args: "--max-model-len 4096 --tensor-parallel-size 2 --moe-backend flashinfer_cutlass"  # Server arguments
-env:                      # Environment variables (optional)
-  VLLM_LOGGING_LEVEL: "DEBUG"
+model_name: Qwen/Qwen2.5-1.5B-Instruct
+accuracy_threshold: 0.54  # Historical value; revalidate after this migration.
+num_questions: 1319
+max_tokens: 1024
+temperature: 0
+chat_template_kwargs:
+  enable_thinking: false
+server_args: "--max-model-len 4096 --tensor-parallel-size 2"
 ```
 
-The `server_args` field accepts any arguments that can be passed to `vllm serve`.
+The test defaults to 1,319 questions, 1,024 output tokens, greedy sampling, seed
+42, concurrency 32 and thinking disabled through the template argument. Model
+configs can override generation settings and server arguments. Four-shot prompt
+construction and answer extraction belong to EvalScope; `num_fewshot`,
+`gen_prefix`, and `use_chat_completions` are no longer model-config switches.
+Use a checkpoint with a chat template. The two base Mixtral MoE configurations
+now select the Instruct sibling for that reason. The two scheduled DeepSeek-V2
+nightly scripts likewise use the Chat checkpoint. Scheduled scripts keep their
+256-token output budget and read scores from the standardized report.
 
-The `env` field accepts a dictionary of environment variables to set for the server process.
+This changes prompts, generation mode, scoring, and some default settings.
+**Historical accuracy and speculative-acceptance thresholds remain unchanged
+but require GPU revalidation.** They are not claimed to be equivalent baselines.
+Choose model-specific output budgets and thinking settings for reproductions.
+
+Server tests retain reports and raw artifacts under pytest's output directory.
+The offloading test retains its two-run/cache-reset sequence. Offline speculative
+checks retain their engine and acceptance assertions, but now generate through
+`LLM.chat()` without legacy completion stop strings. No external server is
+started for those offline checks. See the
+[evaluation guide](../../../docs/benchmarking/evaluation.md).

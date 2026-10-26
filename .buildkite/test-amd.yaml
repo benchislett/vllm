@@ -396,7 +396,11 @@ steps:
   - vllm/model_executor/layers/
   - tests/v1/e2e/spec_decode/
   - vllm/platforms/rocm.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -v -s v1/e2e/spec_decode/draft_model/
 
 #-------------------------------------------------------------  mi250 · misc  ------------------------------------------------------------#
@@ -872,7 +876,11 @@ steps:
   - vllm/compilation/
   - tests/distributed/
   - vllm/platforms/rocm.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - uv pip install --system -r /vllm-workspace/requirements/kv_connectors_rocm.txt
   - pytest -v -s distributed/test_elastic_ep.py
 
@@ -1030,8 +1038,12 @@ steps:
   - vllm/v1/attention/selector.py
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   optional: true
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-small.yaml
 
 - label: ":amd: (MI300) DeepSeek V2-Lite Prefetch Offload Accuracy" # TBD
@@ -1071,7 +1083,11 @@ steps:
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
   - tests/evals/mrcr/
+  - tests/evals/utils.py
+  - vllm/entrypoints/cli/eval.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/mrcr/test_mrcr_correctness.py --config-list-file=evals/mrcr/configs/models-small.txt
 
 - label: ":amd: (MI300) LM Eval Small Models Harness" # TBD
@@ -1113,7 +1129,11 @@ steps:
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
   - tests/evals/gpt_oss/
+  - tests/evals/utils.py
+  - vllm/entrypoints/cli/eval.py
+  - vllm/evals/
   commands:
+    - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
     - pytest -s -v evals/gpt_oss/test_gpqa_correctness.py --config-list-file=configs/models-gfx942.txt
 
 # TODO(akaratza): Retire this standalone ROCm coverage after
@@ -2026,8 +2046,11 @@ steps:
   - vllm/transformers_utils/
   - vllm/utils/
   - vllm/v1/
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
   optional: true
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export VLLM_WORKER_MULTIPROC_METHOD=spawn
   - pytest -v -s -m 'not slow_test' v1/spec_decode --shard-id=$$BUILDKITE_PARALLEL_JOB --num-shards=$$BUILDKITE_PARALLEL_JOB_COUNT
 
@@ -2194,7 +2217,10 @@ steps:
   - vllm/utils/
   - vllm/v1/
   - tests/v1/e2e/spec_decode/
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
   commands:
+    - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
     - >-
       pytest -v -s
       v1/e2e/spec_decode/draft_model/test_draft_model.py::test_draft_model_tensor_parallelism
@@ -2788,7 +2814,11 @@ steps:
   - tests/v1/e2e/general/test_sharded_sampling.py
   - tests/v1/e2e/spec_decode/test_sharded_sampling.py
   - tests/v1/e2e/spec_decode/utils.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export NCCL_CUMEM_HOST_ENABLE=0
   - TP_SIZE=1 DP_SIZE=2 pytest -v -s v1/distributed/test_async_llm_dp.py
   - TP_SIZE=1 DP_SIZE=2 pytest -v -s v1/distributed/test_eagle_dp.py
@@ -3415,9 +3445,13 @@ steps:
   - vllm/v1/attention/selector.py
   - vllm/model_executor/layers/fused_moe/
   - tests/evals/gpt_oss/
+  - tests/evals/utils.py
+  - vllm/entrypoints/cli/eval.py
+  - vllm/evals/
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
   commands:
+    - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
     - pytest -s -v evals/gpt_oss/test_gpqa_correctness.py --config-list-file=configs/models-gfx950.txt
 
 - label: ":amd: (MI355 DPX) LM Eval Small Models"
@@ -3441,7 +3475,10 @@ steps:
   - vllm/v1/attention/selector.py
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-small.yaml
 
 - label: ":amd: (MI355 DPX) LM Eval Watermarking"
@@ -3460,7 +3497,10 @@ steps:
   - vllm/v1/watermarking/
   - vllm/v1/worker/gpu/
   - vllm/platforms/rocm.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export VLLM_WORKER_MULTIPROC_METHOD=spawn
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-watermark.txt
 
@@ -3485,7 +3525,10 @@ steps:
   - vllm/v1/watermarking/
   - vllm/v1/worker/gpu/
   - vllm/platforms/rocm.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export VLLM_WORKER_MULTIPROC_METHOD=spawn
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-watermark-dspark-tp2.txt
 
@@ -3515,7 +3558,10 @@ steps:
   - tests/utils.py
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-qwen35-mi355.txt
 
 - label: ":amd: (MI355) LM Eval Large Models EP"
@@ -3554,7 +3600,10 @@ steps:
   - vllm/v1/worker/
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export VLLM_WORKER_MULTIPROC_METHOD=spawn
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-blackwell-ep-mi355.txt
 
@@ -3569,13 +3618,16 @@ steps:
   source_file_dependencies:
   - csrc/gdn/
   - tests/evals/qwen4_exp/
+  - vllm/evals/
+  - tests/evals/utils.py
+  - vllm/entrypoints/cli/eval.py
   - vllm/model_executor/layers/mamba/
   - vllm/models/qwen4_exp/
   - vllm/v1/attention/backends/short_conv_attn.py
   - vllm/platforms/rocm.py
   commands:
   - export VLLM_WORKER_MULTIPROC_METHOD=spawn
-  - uv pip install --system 'evalscope==1.10.0'
+  - uv pip install --system 'evalscope[openai_mrcr]==1.14.0'
   - pytest -s -v evals/qwen4_exp/test_accuracy.py --config-list-file=configs/models-rocm.txt
 
 - label: ":amd: (MI355 DPX) LM Eval TurboQuant k8v4"
@@ -3601,7 +3653,10 @@ steps:
   - vllm/v1/attention/ops/flydsl_kernels/
   - vllm/v1/attention/ops/turboquant_soa/
   - vllm/platforms/rocm.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/models-turboquant-k8v4-rocm.txt
 
 - label: ":amd: (MI355 DPX) LM Eval TurboQuant t4nc"
@@ -3627,7 +3682,10 @@ steps:
   - vllm/v1/attention/ops/flydsl_kernels/
   - vllm/v1/attention/ops/turboquant_soa/
   - vllm/platforms/rocm.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/models-turboquant-t4nc-rocm.txt
 
 - label: ":amd: (MI355 DPX) LM Eval TurboQuant k3v4nc"
@@ -3653,7 +3711,10 @@ steps:
   - vllm/v1/attention/ops/flydsl_kernels/
   - vllm/v1/attention/ops/turboquant_soa/
   - vllm/platforms/rocm.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/models-turboquant-k3v4nc-rocm.txt
 
 - label: ":amd: (MI355 DPX) LM Eval TurboQuant t3nc"
@@ -3680,7 +3741,10 @@ steps:
   - vllm/v1/attention/ops/flydsl_kernels/
   - vllm/v1/attention/ops/turboquant_soa/
   - vllm/platforms/rocm.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/models-turboquant-t3nc-rocm.txt
 
 - label: ":amd: (MI355) LM Eval Spec Decode (Fixed-length FP8)" # TBD
@@ -3706,7 +3770,10 @@ steps:
   - vllm/v1/attention/
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-spec-decode-rocm.txt
 
 - label: ':amd: (MI355) LM Eval Small Models Distributed'
@@ -3738,7 +3805,10 @@ steps:
   - tests/utils.py
   - vllm/distributed/
   - vllm/v1/attention/ops/
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-mi3xx-fp8-and-mixed.txt
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-small-tp.yaml
 
@@ -3757,7 +3827,10 @@ steps:
   - vllm/model_executor/layers/fused_moe/
   - vllm/model_executor/layers/quantization/
   - vllm/_aiter_ops.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export VLLM_WORKER_MULTIPROC_METHOD=spawn
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=evals/gsm8k/configs/moe-refactor/config-rocm-shard-$$BUILDKITE_PARALLEL_JOB.txt
 
@@ -3868,7 +3941,9 @@ steps:
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
   - tests/evals/
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export VLLM_WORKER_MULTIPROC_METHOD=spawn
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-gfx950-large.txt
 
@@ -3902,7 +3977,10 @@ steps:
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
   - vllm/model_executor/layers/sparse_attn_indexer.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export VLLM_WORKER_MULTIPROC_METHOD=spawn
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-mi355-deepseek-r1-tp.txt
 
@@ -3936,7 +4014,10 @@ steps:
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
   - vllm/model_executor/layers/sparse_attn_indexer.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export VLLM_WORKER_MULTIPROC_METHOD=spawn
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-mi355-deepseek-r1-dp.txt
 
@@ -3970,7 +4051,10 @@ steps:
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
   - vllm/model_executor/layers/sparse_attn_indexer.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export VLLM_WORKER_MULTIPROC_METHOD=spawn
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-mi355-deepseek-v32-tp.txt
 
@@ -4004,7 +4088,10 @@ steps:
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
   - vllm/model_executor/layers/sparse_attn_indexer.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export VLLM_WORKER_MULTIPROC_METHOD=spawn
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-mi355-deepseek-v32-dp.txt
 
@@ -4038,7 +4125,10 @@ steps:
   - vllm/_aiter_ops.py
   - vllm/platforms/rocm.py
   - vllm/model_executor/layers/mamba/
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export VLLM_WORKER_MULTIPROC_METHOD=spawn
   - pytest -s -v evals/gsm8k/test_gsm8k_correctness.py --config-list-file=configs/models-mi355-nemotron-3-super.txt
 
@@ -4056,7 +4146,11 @@ steps:
   - vllm/v1/simple_kv_offload/
   - tests/evals/gsm8k/test_gsm8k_offloading.py
   - vllm/platforms/rocm.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_offloading.py -k "nemotron-h-8b or gemma-4-e4b-it"
 
 - label: ":amd: (MI355) LM Eval KV-Offload Large" # TBD
@@ -4074,7 +4168,11 @@ steps:
   - vllm/v1/simple_kv_offload/
   - tests/evals/gsm8k/test_gsm8k_offloading.py
   - vllm/platforms/rocm.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - VLLM_ROCM_USE_AITER=1 pytest -s -v evals/gsm8k/test_gsm8k_offloading.py -k "deepseek-v4-flash"
 
 - label: ":amd: (MI355) LM Eval Large Models ROCm Harness" # TBD
@@ -4181,7 +4279,11 @@ steps:
   - vllm/v1/simple_kv_offload/
   - tests/evals/gsm8k/test_gsm8k_offloading.py
   - vllm/platforms/rocm.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -s -v evals/gsm8k/test_gsm8k_offloading.py -k "qwen3.5-35b or deepseek-v2-lite"
 
 #---------------------------------------------------------  mi355 · examples  ----------------------------------------------------------#
@@ -5138,7 +5240,10 @@ steps:
   - vllm/model_executor/layers/quantization/
   - vllm/model_executor/kernels/linear/
   - vllm/platforms/rocm.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -v -s v1/e2e/spec_decode/acceptance_rates/dflash/ -k "dflash2"
 
 - label: ":amd: (MI355 DPX) Spec Decode Draft Model" # TBD
@@ -5156,7 +5261,11 @@ steps:
   - vllm/model_executor/layers/
   - tests/v1/e2e/spec_decode/
   - vllm/platforms/rocm.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -v -s v1/e2e/spec_decode/draft_model/
 
 - label: ":amd: (MI355 DPX) Spec Decode Speculators + MTP" # TBD
@@ -5176,7 +5285,11 @@ steps:
   - tests/v1/e2e/spec_decode/
   - vllm/platforms/rocm.py
   - vllm/v1/attention/backends/
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -v -s v1/e2e/spec_decode/speculators/
   - pytest -v -s v1/e2e/spec_decode/mtp/
 
@@ -5195,7 +5308,11 @@ steps:
   - vllm/model_executor/layers/
   - tests/v1/e2e/spec_decode/
   - vllm/platforms/rocm.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -v -s v1/e2e/spec_decode/eagle/ -k "deepseek_eagle or qwen3_eagle3"
 
 - label: ":amd: (MI355 DPX) Spec Decode Eagle 2: Llama 3 + Qwen VL + Other"
@@ -5213,7 +5330,11 @@ steps:
   - vllm/model_executor/layers/
   - tests/v1/e2e/spec_decode/
   - vllm/platforms/rocm.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -v -s v1/e2e/spec_decode/eagle/ -k "not deepseek_eagle and not qwen3_eagle3"
 
 
@@ -5233,7 +5354,11 @@ steps:
   - tests/v1/e2e/spec_decode/
   - tests/spec_decode/
   - vllm/platforms/rocm.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -v -s v1/e2e/spec_decode/ngram_suffix/
   - python3 spec_decode/test_custom_proposer.py
 
@@ -5682,8 +5807,11 @@ steps:
   - vllm/transformers_utils/
   - vllm/utils/
   - vllm/v1/
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
   optional: true
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export VLLM_WORKER_MULTIPROC_METHOD=spawn
   - pytest -v -s -m 'not slow_test' v1/spec_decode
 
@@ -5714,7 +5842,10 @@ steps:
   - vllm/platforms/rocm.py
   - vllm/v1/worker/gpu/spec_decode/
   - tests/v1/e2e/spec_decode/conftest.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - if [ "$$BUILDKITE_PARALLEL_JOB" = "0" ]; then pytest -v -s v1/e2e/spec_decode/acceptance_rates/mtp_other/ --deselect "tests/v1/e2e/spec_decode/acceptance_rates/mtp_other/test_mtp.py::test_gemma4_mtp_acceptance_lengths[False]" --deselect "tests/v1/e2e/spec_decode/acceptance_rates/mtp_other/test_mtp.py::test_gemma4_mtp_acceptance_lengths[True]"; fi
   - if [ "$$BUILDKITE_PARALLEL_JOB" = "1" ]; then pytest -v -s "v1/e2e/spec_decode/acceptance_rates/mtp_other/test_mtp.py::test_gemma4_mtp_acceptance_lengths[False]"; fi
   - if [ "$$BUILDKITE_PARALLEL_JOB" = "2" ]; then pytest -v -s "v1/e2e/spec_decode/acceptance_rates/mtp_other/test_mtp.py::test_gemma4_mtp_acceptance_lengths[True]"; fi
@@ -5763,7 +5894,10 @@ steps:
   - tests/v1/spec_decode/test_speculators_correctness.py
   - vllm/platforms/rocm.py
   - vllm/v1/worker/gpu/spec_decode/dflash/
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export VLLM_ALLOW_INSECURE_SERIALIZATION=1
   - pytest -v -s v1/spec_decode/test_speculators_correctness.py -m slow_test
 
@@ -5790,7 +5924,11 @@ steps:
   - vllm/model_executor/models/qwen3.py
   - vllm/model_executor/models/laguna.py
   - vllm/platforms/rocm.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -v -s v1/e2e/spec_decode/acceptance_rates/dflash/ -k "not dflash2"
 
 - label: ":amd: (MI355 DPX) Spec Decode AL DSpark Nightly"
@@ -5818,7 +5956,11 @@ steps:
   - vllm/model_executor/models/gemma4_unified.py
   - vllm/model_executor/models/gemma4_mtp.py
   - vllm/platforms/rocm.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -v -s v1/e2e/spec_decode/acceptance_rates/dspark/
 
 - label: ":amd: (MI355) Spec Decode DeepSeek MTP Parallel Load"
@@ -5845,7 +5987,11 @@ steps:
   - vllm/v1/worker/gpu/spec_decode/
   - vllm/v1/worker/gpu_model_runner.py
   - vllm/platforms/rocm.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - pytest -v -s v1/e2e/spec_decode/test_mtp_parallel_load.py
 
 - label: ":amd: (MI355 DPX) Acceptance Length (Large Models)" # TBD
@@ -5859,7 +6005,11 @@ steps:
   - vllm/v1/spec_decode/
   - tests/v1/spec_decode/test_acceptance_length.py
   - vllm/platforms/rocm.py
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - export VLLM_ALLOW_INSECURE_SERIALIZATION=1
   - pytest -v -s v1/spec_decode/test_acceptance_length.py -m slow_test
 

@@ -2,7 +2,6 @@ model_name: "mgoin/Kimi-K3-pruned75"
 accuracy_threshold: 0.33
 min_acceptance_length: 4.8
 num_questions: 1319
-num_fewshot: 5
 startup_max_wait_seconds: 1800
 server_args: >-
   --trust-remote-code

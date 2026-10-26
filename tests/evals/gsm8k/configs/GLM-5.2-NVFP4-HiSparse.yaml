@@ -2,7 +2,6 @@ model_name: "nvidia/GLM-5.2-NVFP4"
 accuracy_threshold: 0.90
 tolerance: 0.0
 num_questions: 1319
-num_fewshot: 5
 max_tokens: 256
 max_concurrency: 32
 request_timeout_seconds: 1800

@@ -75,6 +75,10 @@ steps:
   - vllm/v1/executor/
   - vllm/compilation/
   - tests/distributed/
+  - tests/evals/gsm8k/gsm8k_eval.py
+  - tests/evals/utils.py
+  - vllm/evals/
   commands:
+  - uv pip install --system "evalscope[openai_mrcr]==1.14.0"
   - bash /vllm-workspace/.buildkite/scripts/install-kv-connectors.sh
   - pytest -v -s distributed/test_elastic_ep.py

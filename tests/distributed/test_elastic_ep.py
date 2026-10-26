@@ -10,9 +10,10 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 import requests
 
+from tests.evals.gsm8k.gsm8k_eval import gsm8k_task
+from tests.evals.utils import run_evaluation
 from vllm.platforms import current_platform
 
-from ..evals.gsm8k.gsm8k_eval import evaluate_gsm8k
 from ..utils import RemoteOpenAIServer, multi_gpu_test
 
 
@@ -153,18 +154,16 @@ def _scale_with_traffic(
     )
 
 
-def _run_gsm8k_eval(server: RemoteOpenAIServer, stage: str) -> float:
+def _run_gsm8k_eval(server: RemoteOpenAIServer, stage: str, work_dir) -> float:
     assert server.port is not None
-    result = evaluate_gsm8k(
-        num_questions=NUM_GSM8K_QUESTIONS,
-        host=f"http://{server.host}",
-        port=server.port,
+    report = run_evaluation(
+        gsm8k_task({"model_name": MODEL_NAME, "num_questions": NUM_GSM8K_QUESTIONS}),
+        server.url_for("v1"),
+        work_dir,
     )
-    accuracy = result["accuracy"]
-    print(
-        f"[{stage}] GSM8K accuracy: {accuracy:.3f} "
-        f"({result['num_questions']} questions)"
-    )
+    result = report["metrics"]["gsm8k"]
+    accuracy = result["score"]
+    print(f"[{stage}] GSM8K accuracy: {accuracy:.3f} ({result['num']} questions)")
     assert accuracy >= EXPECTED_ACCURACY, (
         f"[{stage}] GSM8K accuracy {accuracy:.3f} is below "
         f"expected threshold {EXPECTED_ACCURACY}"
@@ -237,7 +236,7 @@ def _base_serve_args(
 )
 @multi_gpu_test(num_gpus=4)
 def test_elastic_ep_scaling(
-    enforce_eager: bool, traffic_mode: str, all2all_backend: str
+    enforce_eager: bool, traffic_mode: str, all2all_backend: str, tmp_path
 ):
     from vllm.distributed.eplb.eplb_communicator import has_nixl
     from vllm.utils.import_utils import has_nixl_ep
@@ -261,17 +260,21 @@ def test_elastic_ep_scaling(
         vllm_serve_args,
         max_wait_seconds=1200,
     ) as server:
-        initial_accuracy = _run_gsm8k_eval(server, "Initial")
+        initial_accuracy = _run_gsm8k_eval(server, "Initial", tmp_path / "initial")
 
         _scale_with_traffic(server, initial_dp_size, target_dp_size, traffic_mode)
-        scale_up_accuracy = _run_gsm8k_eval(server, "After scale up")
+        scale_up_accuracy = _run_gsm8k_eval(
+            server, "After scale up", tmp_path / "scale-up"
+        )
         assert scale_up_accuracy >= initial_accuracy - ACCURACY_TOL, (
             f"Scale up accuracy {scale_up_accuracy:.3f} dropped more than "
             f"{ACCURACY_TOL} below initial accuracy {initial_accuracy:.3f}"
         )
 
         _scale_with_traffic(server, target_dp_size, initial_dp_size, traffic_mode)
-        scale_down_accuracy = _run_gsm8k_eval(server, "After scale down")
+        scale_down_accuracy = _run_gsm8k_eval(
+            server, "After scale down", tmp_path / "scale-down"
+        )
         assert scale_down_accuracy >= initial_accuracy - ACCURACY_TOL, (
             f"Scale down accuracy {scale_down_accuracy:.3f} dropped more than "
             f"{ACCURACY_TOL} below initial accuracy {initial_accuracy:.3f}"
