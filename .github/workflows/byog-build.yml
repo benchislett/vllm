@@ -1,0 +1,35 @@
+name: Build BYOG image
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Branch or commit in this repository (must include BYOG clients)
+        required: true
+        type: string
+      architecture:
+        description: Image architecture
+        required: true
+        type: choice
+        default: amd64
+        options: [amd64, arm64]
+permissions:
+  contents: read
+jobs:
+  request:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Resolve source and request image-only build
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BYOG_ARCH: ${{ inputs.architecture }}
+          BYOG_AMD64_QUEUE: ${{ vars.BYOG_AMD64_QUEUE }}
+          BYOG_ARM64_QUEUE: ${{ vars.BYOG_ARM64_QUEUE }}
+          BYOG_SOURCE_REF: ${{ inputs.source_ref }}
+          BUILDKITE_API_TOKEN: ${{ secrets.BUILDKITE_API_TOKEN }}
+          BUILDKITE_ORGANIZATION: ${{ vars.BUILDKITE_ORGANIZATION }}
+          BUILDKITE_BYOG_PIPELINE: ${{ vars.BUILDKITE_BYOG_PIPELINE }}
+          BYOG_IMAGE_REPO: ${{ vars.BYOG_IMAGE_REPO }}
+        run: python3 tools/byog/request_build.py
