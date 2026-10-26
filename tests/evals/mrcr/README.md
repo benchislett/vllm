@@ -11,9 +11,11 @@ Smoke test for long-context behavior using OpenAI's public [`openai/mrcr`](https
 pytest -s -v tests/evals/mrcr/test_mrcr_correctness.py \
     --config-list-file=configs/models-small.txt
 
-# Standalone (server already running; model and context auto-discovered)
-vllm serve Qwen/Qwen3-0.6B --reasoning-parser qwen3 --port 8000
-python tests/evals/mrcr/mrcr_eval.py --port 8000
+# Standalone (choose a model with sufficient context for the preset)
+# Start MODEL with sufficient context for 128k input plus output/template overhead.
+vllm serve MODEL --port 8000
+vllm eval mrcr-v2-8needle-128k --model MODEL \
+    --api-url http://localhost:8000/v1 --work-dir results/mrcr
 ```
 
 ## Configuration
@@ -38,7 +40,20 @@ server_args: "--max-model-len 32768 --reasoning-parser qwen3"
 
 ## Notes
 
-- Samples stream from three parquet shards (`{N}needle/{N}needle_0.parquet`); only the first few row groups are fetched, not the full 1.4 GB repo.
-- `max_prompt_tokens` defaults to `max_model_len - max_tokens - 256`, i.e. fills whatever context the server advertises. Set `--max-model-len` on the server to control the smoke-test context length; override `--max-prompt-tokens` on the client to cap below that.
-- Sample length is pre-filtered by `n_chars × 4 ≤ max_prompt_tokens`, then verified via the server's `/tokenize` endpoint under the actual chat template.
-- Reasoning models: start the server with `--reasoning-parser <name>` (e.g. `qwen3`, `deepseek_r1`) so `<think>` goes to `message.reasoning_content` and doesn't contaminate the scored answer.
+- Install `pip install "vllm[eval]"`. The test invokes `vllm eval openai_mrcr`
+  separately for each needle count, balances `num_samples` across those invocations,
+  and retains per-needle threshold checks and artifacts.
+- `max_prompt_tokens` defaults to the advertised server context minus output
+  budget and 256 tokens. EvalScope counts message content with `o200k_base`,
+  not the server tokenizer or chat template. Set a lower explicit cap when needed
+  to leave sufficient model-specific context headroom.
+- Sample limits apply after needle/length filtering. EvalScope can load the full
+  dataset snapshot, unlike the former streaming-shard helper.
+- The adapter changes sampling/token counting and may normalize whitespace when
+  scoring. Historical thresholds are retained but must be revalidated on the
+  configured model; this migration does not establish score equivalence.
+- Reasoning models need the appropriate server reasoning parser. The default
+  `extra_body` disables thinking through `chat_template_kwargs.enable_thinking`.
+- The standalone presets select disjoint 64–128k and 128–256k input bins and
+  require a sufficiently large server context. See the
+  [evaluation guide](../../../docs/benchmarking/evaluation.md).

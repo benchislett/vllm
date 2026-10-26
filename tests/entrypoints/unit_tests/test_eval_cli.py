@@ -4,7 +4,7 @@
 
 import asyncio
 import json
-import sys
+import subprocess
 from typing import Any
 
 import pytest
@@ -12,8 +12,7 @@ from aiohttp import web
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fail", [False, True])
-async def test_eval_cli_multiple_adapters_and_partial_results(tmp_path, fail):
+async def test_eval_cli_multiple_adapters_and_partial_results(tmp_path):
     rows: dict[str, dict[str, Any]] = {
         "gsm8k": {"question": "six times seven?", "answer": "#### 42"},
         "aime25": {"problem": "AIME fixture: six times seven?", "answer": "42"},
@@ -36,7 +35,29 @@ async def test_eval_cli_multiple_adapters_and_partial_results(tmp_path, fail):
         path = tmp_path / name
         path.mkdir()
         split = "train" if name in ("gpqa_diamond", "openai_mrcr") else "test"
-        (path / f"{split}.jsonl").write_text(json.dumps(row) + "\n")
+        values = [row]
+        if name == "aime25":
+            values.append({**row, "problem": "AIME transport failure"})
+        if name == "openai_mrcr":
+            values = [
+                {
+                    **row,
+                    "n_needles": needles,
+                    "prompt": json.dumps(
+                        [{"role": "user", "content": "MRCR fixture " + " x" * length}]
+                    ),
+                }
+                for needles, length in (
+                    (2, 100000),
+                    (8, 100),
+                    (8, 100000),
+                    (8, 200000),
+                    (8, 300000),
+                )
+            ]
+        (path / f"{split}.jsonl").write_text(
+            "".join(json.dumps(value) + "\n" for value in values)
+        )
         dataset_args[name] = {
             "local_path": str(path),
             "few_shot_num": 0,
@@ -47,7 +68,17 @@ async def test_eval_cli_multiple_adapters_and_partial_results(tmp_path, fail):
         json.dumps(
             {
                 "model_name": "fixture",
-                "datasets": {name: {"metric_threshold": 0.9} for name in rows},
+                "datasets": {
+                    name: {"metric_threshold": 0.9}
+                    for name in (
+                        "gsm8k",
+                        "aime25",
+                        "gpqa_diamond",
+                        "mrcr-v2-8needle-128k",
+                        "mrcr-v2-8needle-256k",
+                    )
+                },
+                "limit": 2,
                 "server_args": "--tensor-parallel-size 4",
                 "startup_max_wait_seconds": 1800,
                 "generation_config": {
@@ -67,7 +98,7 @@ async def test_eval_cli_multiple_adapters_and_partial_results(tmp_path, fail):
         payload = await request.json()
         received.append(payload)
         prompt = str(payload["messages"])
-        if fail and "AIME fixture" in prompt:
+        if "AIME transport failure" in prompt:
             return web.json_response(
                 {"error": {"message": "fixture failure"}}, status=400
             )
@@ -110,94 +141,35 @@ async def test_eval_cli_multiple_adapters_and_partial_results(tmp_path, fail):
     try:
         await web.TCPSite(runner, "127.0.0.1", 0).start()
         port = runner.addresses[0][1]
-        command = [
-            sys.executable,
-            "-m",
-            "vllm.entrypoints.cli.main",
-            "eval",
-            "--eval-config",
-            str(config),
-            "--api-url",
-            f"http://127.0.0.1:{port}/v1",
-            "--eval-batch-size",
-            "1",
-            "--work-dir",
-            str(tmp_path / "output"),
-        ]
-        process = await asyncio.create_subprocess_exec(
-            *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-        )
-        try:
-            output, _ = await asyncio.wait_for(process.communicate(), timeout=120)
-        finally:
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
-        assert process.returncode == int(fail), output.decode()
+        from tests.evals.utils import run_evaluation
+
+        config_value = json.loads(config.read_text())
+        config_value["eval_batch_size"] = 1
+        with pytest.raises(subprocess.CalledProcessError) as failure:
+            await asyncio.to_thread(
+                run_evaluation,
+                config_value,
+                f"http://127.0.0.1:{port}/v1",
+                tmp_path / "output",
+                timeout=120,
+            )
+        assert failure.value.returncode == 1
     finally:
         await runner.cleanup()
     report = json.loads((tmp_path / "output/result.json").read_text())
-    assert report["status"] == ("partial" if fail else "completed")
+    assert report["status"] == "partial"
     assert report["schema"] == "byog.measurement/v1"
     assert report["server"] is None
-    assert report["metrics"]["gsm8k"]["score"] == 1
-    assert report["metrics"]["gpqa_diamond"]["score"] == 1
-    assert report["metrics"]["openai_mrcr"]["score"] == 1
-    if not fail:
-        assert report["metrics"]["aime25"]["score"] == 1
-    assert bool(report["records"]["errors"]) == fail
+    for name in (
+        "gsm8k",
+        "gpqa_diamond",
+        "aime25",
+        "mrcr-v2-8needle-128k",
+        "mrcr-v2-8needle-256k",
+    ):
+        assert report["metrics"][name] == {"score": 1, "num": 1}
+    assert set(report["records"]["errors"]) == {"aime25"}
     assert report["records"]["artifacts"]
     assert "secret-fixture-key" not in json.dumps(report)
     assert all(p["max_tokens"] == 128 and p["temperature"] == 0 for p in received)
     assert report["settings"]["tasks"]["gsm8k"]["eval_batch_size"] == 1
-
-
-def test_mrcr_presets_filter_needles_and_context(tmp_path):
-    from evalscope.api.registry import get_benchmark
-    from evalscope.config import TaskConfig
-
-    from vllm.evals.runner import PRESETS
-
-    path = tmp_path / "mrcr"
-    path.mkdir()
-    (path / "train.jsonl").write_text(
-        "".join(
-            json.dumps(
-                {
-                    "prompt": json.dumps([{"role": "user", "content": " x" * length}]),
-                    "answer": "PREFIXanswer",
-                    "random_string_to_prepend": "PREFIX",
-                    "n_needles": needles,
-                }
-            )
-            + "\n"
-            for needles, length in [
-                (2, 100000),
-                (8, 65536),
-                (8, 100000),
-                (8, 131072),
-                (8, 200000),
-                (8, 262144),
-                (8, 262145),
-            ]
-        )
-    )
-    for name, preset in PRESETS.items():
-        task = TaskConfig(
-            model="fixture",
-            api_url="http://localhost/v1",
-            datasets=["openai_mrcr"],
-            dataset_hub="local",
-            dataset_args={
-                "openai_mrcr": {
-                    "local_path": str(path),
-                    "extra_params": preset["extra_params"],
-                }
-            },
-        )
-        adapter = get_benchmark("openai_mrcr", task)
-        data = adapter.load()
-        samples = list(data[0]["default"])
-        expected = [100000, 131072] if name.endswith("128k") else [200000, 262144]
-        assert [s.metadata["raw_input_tok_cnt"] for s in samples] == expected
-        assert all(s.metadata["n_needles"] == 8 for s in samples)

@@ -1,15 +1,20 @@
-# GPQA Evaluation using GPT-OSS
+# GPQA-Diamond Evaluation for GPT-OSS
 
-This directory contains GPQA evaluation tests using the GPT-OSS evaluation package and vLLM server.
+This directory contains GPQA evaluation tests using `vllm eval gpqa_diamond` (EvalScope) and a vLLM server. Install
+`pip install "vllm[eval]"` first. Eight repeats, configured reasoning effort and
+a 32,768-token output budget are retained. EvalScope's prompts/scoring differ
+from the former GPT-OSS Responses evaluator; historical thresholds need model
+accuracy revalidation. Reports and raw artifacts are retained in the pytest
+output directory.
 
 ## Usage
 
 ### Run tests with pytest (like buildkite)
 
 ```bash
-# H200
+# H100
 pytest -s -v tests/evals/gpt_oss/test_gpqa_correctness.py \
-    --config-list-file=configs/models-h200.txt
+    --config-list-file=configs/models-h100.txt
 
 # B200
 pytest -s -v tests/evals/gpt_oss/test_gpqa_correctness.py \

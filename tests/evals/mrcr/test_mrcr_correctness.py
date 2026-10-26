@@ -9,24 +9,14 @@ Usage:
 
 import shlex
 
+import requests
 import yaml
 
+from tests.evals.utils import run_evaluation
 from tests.utils import RemoteOpenAIServer
 
-from .mrcr_eval import evaluate_mrcr
 
-
-def _split_host_port(url: str, default_port: int = 8000) -> tuple[str, int]:
-    if "://" in url:
-        url = url.split("://", 1)[1]
-    host_port = url.split("/", 1)[0]
-    if ":" in host_port:
-        host, p = host_port.split(":", 1)
-        return f"http://{host}", int(p)
-    return f"http://{host_port}", default_port
-
-
-def test_mrcr_correctness(config_filename):
+def test_mrcr_correctness(config_filename, tmp_path):
     cfg = yaml.safe_load(config_filename.read_text(encoding="utf-8"))
 
     server_args = shlex.split(cfg.get("server_args", ""))
@@ -42,24 +32,63 @@ def test_mrcr_correctness(config_filename):
         env_dict=cfg.get("env"),
         max_wait_seconds=cfg.get("startup_max_wait_seconds", 600),
     ) as server:
-        host, port = _split_host_port(server.url_for("v1"))
-        results = evaluate_mrcr(
-            model_name=cfg.get("model_name"),
-            num_samples=cfg.get("num_samples", 40),
-            needles=cfg.get("needles", [2, 4, 8]),
-            max_prompt_tokens=cfg.get("max_prompt_tokens"),
-            max_tokens=cfg.get("max_tokens", 2048),
-            host=host,
-            port=port,
-            concurrency=cfg.get("concurrency", 8),
-            extra_body=cfg.get("extra_body"),
-        )
+        base_url = server.url_for("v1").rstrip("/")
+        max_tokens = cfg.get("max_tokens", 2048)
+        max_prompt_tokens = cfg.get("max_prompt_tokens")
+        if max_prompt_tokens is None:
+            response = requests.get(base_url + "/models", timeout=30)
+            response.raise_for_status()
+            max_prompt_tokens = (
+                response.json()["data"][0]["max_model_len"] - max_tokens - 256
+            )
+        needles = cfg.get("needles", [2, 4, 8])
+        num_samples = cfg.get("num_samples", 40)
+        per_bucket, leftover = divmod(num_samples, len(needles))
+        scores, counts = {}, {}
+        for index, needle in enumerate(needles):
+            limit = per_bucket + (index < leftover)
+            if limit == 0:
+                continue
+            report = run_evaluation(
+                {
+                    "model": cfg["model_name"],
+                    "datasets": ["openai_mrcr"],
+                    "dataset_hub": "huggingface",
+                    "limit": limit,
+                    "seed": cfg.get("seed", 42),
+                    "eval_batch_size": cfg.get("concurrency", 8),
+                    "dataset_args": {
+                        "openai_mrcr": {
+                            "extra_params": {
+                                "needle_count": [needle],
+                                "max_context_size": max_prompt_tokens,
+                            },
+                        }
+                    },
+                    "generation_config": {
+                        "max_tokens": max_tokens,
+                        "temperature": 0,
+                        "extra_body": cfg.get(
+                            "extra_body",
+                            {"chat_template_kwargs": {"enable_thinking": False}},
+                        ),
+                    },
+                },
+                base_url,
+                tmp_path / f"needle-{needle}",
+            )
+            result = report["metrics"]["openai_mrcr"]
+            scores[needle], counts[needle] = result["score"], result["num"]
+        results = {
+            "match_ratio": sum(scores[n] * counts[n] for n in scores)
+            / sum(counts.values()),
+            "per_needle": {f"match_ratio_n{n}": value for n, value in scores.items()},
+        }
 
     threshold = cfg["match_ratio_threshold"]
     tol = cfg.get("tolerance", 0.05)
 
     print(f"  match_ratio:     {results['match_ratio']:.4f}")
-    print(f"  prefix_hit_rate: {results['prefix_hit_rate']:.4f}")
     for k, v in results["per_needle"].items():
         print(f"  {k}: {v:.4f}")
 
