@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -72,7 +74,10 @@ impl Workload {
 }
 
 /// Require disabled caching and read hit counters across all engines.
-pub async fn prefix_cache_snapshot(client: &reqwest::Client, config: &BenchConfig) -> Result<f64> {
+pub async fn prefix_cache_snapshot(
+    client: &reqwest::Client,
+    config: &BenchConfig,
+) -> Result<BTreeMap<String, f64>> {
     let mut request = client
         .get(format!("{}/metrics", config.base_url.trim_end_matches('/')))
         .timeout(std::time::Duration::from_secs(10));
@@ -86,7 +91,7 @@ pub async fn prefix_cache_snapshot(client: &reqwest::Client, config: &BenchConfi
     }
     let text = request.send().await?.error_for_status()?.text().await?;
     let mut configurations = 0;
-    let mut hits = None;
+    let mut hits = BTreeMap::new();
     for line in text.lines().map(str::trim).filter(|line| !line.starts_with('#')) {
         let name = line.split(['{', ' ']).next().unwrap_or("");
         if name == "vllm:cache_config_info" {
@@ -110,16 +115,17 @@ pub async fn prefix_cache_snapshot(client: &reqwest::Client, config: &BenchConfi
                 .and_then(|value| value.parse::<f64>().ok())
                 .filter(|value| value.is_finite());
             if let Some(value) = value {
-                hits = Some(hits.unwrap_or(0.0) + value);
+                let series = line.rsplit_once('}').map_or(name, |(labels, _)| labels);
+                hits.insert(series.to_owned(), value);
             } else {
                 return Err(BenchError::Config("Invalid prefix cache counter".into()));
             }
         }
     }
-    if configurations == 0 || hits.is_none() {
+    if configurations == 0 || hits.is_empty() {
         return Err(BenchError::Config("Cannot verify disabled prefix caching: expose cache configuration and counters at /metrics".into()));
     }
-    Ok(hits.unwrap())
+    Ok(hits)
 }
 
 pub fn metadata(config: &BenchConfig) -> Value {

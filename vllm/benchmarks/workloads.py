@@ -95,7 +95,7 @@ def workload_metadata(args: argparse.Namespace) -> dict | None:
 
 async def prefix_cache_snapshot(
     base_url: str, headers: dict | None, ssl_context
-) -> float:
+) -> dict[str, float]:
     """Require disabled prefix caching and read counters across all serving engines."""
     import aiohttp
     from prometheus_client.parser import text_string_to_metric_families
@@ -124,12 +124,12 @@ async def prefix_cache_snapshot(
             "--workload requires verified disabled prefix caching; start the server "
             "with --no-enable-prefix-caching and expose /metrics"
         )
-    hits = [
-        s.value
+    hits = {
+        json.dumps([s.name, s.labels], sort_keys=True): s.value
         for s in samples
         if s.name
         in {"vllm:prefix_cache_hits_total", "vllm:external_prefix_cache_hits_total"}
-    ]
+    }
     if not hits:
         raise ValueError("Cannot verify workload prefix-cache hits: counters missing")
-    return sum(hits)
+    return hits
