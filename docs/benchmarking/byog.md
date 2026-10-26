@@ -21,8 +21,8 @@ start a server, or require GPUs. Use a different, empty output directory for the
 actual run; omit `--dry-run` to execute it.
 
 The included reference is a **smoke configuration** for the pinned NVIDIA
-Nemotron Nano NVFP4 checkpoint: GSM8K on 32 questions and 128 requests at each
-of three 8k1k concurrency points. It is an initial configuration to validate on
+Nemotron Nano NVFP4 checkpoint: GSM8K on 32 questions and 8k1k workloads at concurrency 1/16/64
+(20/160/640 measured requests). It is an initial configuration to validate on
 your hardware, not a calibrated model accuracy or performance reference.
 
 For an image published by the build below:
@@ -48,8 +48,8 @@ benchmark concurrency points run sequentially against that server. Startup and
 client timeouts are configurable. The runner stops its process groups on normal
 completion, errors and interruption, and preserves completed results when later
 steps fail. Exit zero means every selected job completed, not that an accuracy
-threshold was met. Prefix caches are not reset between phases; this state policy
-must match when comparing results.
+threshold was met. Prefix caching is disabled for the suite and each benchmark
+verifies the server configuration and hit counters.
 
 ## Reference recipes and overrides
 
@@ -66,8 +66,6 @@ serve:
 benchmarks:
   - workload: 8k1k-v1
     concurrency: [1, 16, 64, 256]
-    args:
-      num-prompts: 1000
 ```
 
 Evaluations accept any registered EvalScope dataset name or the MRCR presets

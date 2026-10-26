@@ -7,6 +7,7 @@ serve:
   config:
     tensor-parallel-size: 1
     max-model-len: 16384
+    enable-prefix-caching: false
   env: {}
 evals:
   - name: gsm8k
@@ -22,5 +23,3 @@ evals:
 benchmarks:
   - workload: 8k1k-v1
     concurrency: [1, 16, 64]
-    args:
-      num-prompts: 128

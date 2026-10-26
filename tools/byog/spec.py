@@ -91,6 +91,7 @@ def resolve(path: Path, overrides: list[Path]) -> dict:
         raise ValueError(
             "serve.config overrides a runner-owned identity or endpoint setting"
         )
+    config.setdefault("enable-prefix-caching", False)
     environment = merge(environment, serve.get("env", {}))
     for key, value in environment.items():
         if (
@@ -145,6 +146,8 @@ def resolve(path: Path, overrides: list[Path]) -> dict:
             raise ValueError(
                 "Eval entries require a dataset or preset name and optional args"
             )
+    if spec["benchmarks"] and config["enable-prefix-caching"]:
+        raise ValueError("BYOG benchmark workloads require disabled prefix caching")
     for benchmark in spec["benchmarks"]:
         if set(benchmark) - {"workload", "concurrency", "args"}:
             raise ValueError("Unknown benchmark settings")
